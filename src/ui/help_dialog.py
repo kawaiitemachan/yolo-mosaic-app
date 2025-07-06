@@ -49,6 +49,7 @@ class HelpDialog(QDialog):
             ("アノテーション機能", "annotation"),
             ("学習機能", "training"),
             ("推論・モザイク処理", "inference"),
+            ("モデル管理", "models"),
             ("バッチ処理", "batch"),
             ("設定とカスタマイズ", "settings"),
             ("トラブルシューティング", "troubleshooting")
@@ -538,6 +539,102 @@ class HelpDialog(QDialog):
 <li>「PNGメタデータを保持」にチェック</li>
 <li>画像生成AIのプロンプト情報などを維持</li>
 <li>ファイルサイズが若干大きくなる可能性</li>
+</ul>
+</div>
+""",
+            
+            "models": """
+<h2>モデル管理</h2>
+
+<h3>モデル管理タブの機能</h3>
+<p>モデル管理タブでは、学習済みモデルの一覧表示と管理を行います。</p>
+
+<h3>モデル一覧</h3>
+<table>
+<tr>
+    <th>表示項目</th>
+    <th>説明</th>
+</tr>
+<tr>
+    <td><b>モデル名</b></td>
+    <td>学習時に自動生成された名前（データセット名_training）</td>
+</tr>
+<tr>
+    <td><b>作成日時</b></td>
+    <td>モデルの学習完了日時</td>
+</tr>
+<tr>
+    <td><b>サイズ</b></td>
+    <td>モデルフォルダの合計サイズ</td>
+</tr>
+<tr>
+    <td><b>状態</b></td>
+    <td>✓ 完了（best.ptが存在）または ⚠ 不完全</td>
+</tr>
+</table>
+
+<h3>モデル操作</h3>
+<div class="info-box">
+<p>以下の操作は右クリックメニューまたはツールバーから実行できます：</p>
+</div>
+
+<table>
+<tr>
+    <th>操作</th>
+    <th>説明</th>
+</tr>
+<tr>
+    <td><b>詳細情報</b></td>
+    <td>学習設定（args.yaml）と学習結果の確認</td>
+</tr>
+<tr>
+    <td><b>名前変更</b></td>
+    <td>モデルフォルダの名前を変更</td>
+</tr>
+<tr>
+    <td><b>削除</b></td>
+    <td>不要なモデルを完全に削除（確認ダイアログあり）</td>
+</tr>
+<tr>
+    <td><b>Finderで開く</b></td>
+    <td>モデルフォルダをエクスプローラー/Finderで直接開く</td>
+</tr>
+</table>
+
+<h3>モデルの詳細情報</h3>
+<p>詳細情報ダイアログでは以下を確認できます：</p>
+<ul>
+<li><b>基本情報：</b>モデル名、作成日時、最終更新日時</li>
+<li><b>学習設定：</b>使用したパラメータ（エポック数、バッチサイズなど）</li>
+<li><b>学習結果：</b>最終エポックのmAP、損失値などの指標</li>
+</ul>
+
+<h3>自動更新機能</h3>
+<div class="tip-box">
+<p>モデル一覧は5秒ごとに自動更新されます。学習が完了したモデルは自動的にリストに追加されます。</p>
+</div>
+
+<h3>モデルの保存場所</h3>
+<table width="100%" style="background-color: #eff6ff; border: 1px solid #3b82f6; margin: 10px 0;">
+<tr><td style="padding: 10px; font-family: monospace;">
+data/models/<br>
+├── sample_dataset_training/<br>
+│   ├── train/<br>
+│   │   └── weights/<br>
+│   │       ├── best.pt    ← 最良モデル<br>
+│   │       └── last.pt    ← 最終モデル<br>
+│   ├── args.yaml          ← 学習設定<br>
+│   └── results.csv        ← 学習結果<br>
+└── other_dataset_training/
+</td></tr>
+</table>
+
+<h3>注意事項</h3>
+<div class="warning-box">
+<ul>
+<li>削除したモデルは復元できません</li>
+<li>名前変更時は特殊文字（/, \, :, *, ?, ", <, >, |）は使用できません</li>
+<li>学習中のモデルは削除・名前変更できません</li>
 </ul>
 </div>
 """,

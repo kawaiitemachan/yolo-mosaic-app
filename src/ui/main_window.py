@@ -20,6 +20,22 @@ class MainWindow(QMainWindow):
         self.show_device_info()
         self.setup_auto_save()
         self.load_app_settings()
+        
+        # タブのスタイルを設定
+        self.tab_widget.setStyleSheet("""
+            QTabWidget::pane {
+                border: 1px solid #cccccc;
+                background-color: white;
+            }
+            QTabBar::tab {
+                padding: 8px 16px;
+                margin-right: 2px;
+            }
+            QTabBar::tab:selected {
+                background-color: white;
+                border-bottom: 2px solid #3b82f6;
+            }
+        """)
     
     def init_ui(self):
         central_widget = QWidget()
@@ -34,14 +50,17 @@ class MainWindow(QMainWindow):
         from .annotation_widget import AnnotationWidget
         from .training_widget import TrainingWidget
         from .inference_widget import InferenceWidget
+        from .models_manager_widget import ModelsManagerWidget
         
         self.annotation_tab = AnnotationWidget()
         self.training_tab = TrainingWidget()
         self.inference_tab = InferenceWidget()
+        self.models_tab = ModelsManagerWidget()
         
         self.tab_widget.addTab(self.annotation_tab, "アノテーション")
         self.tab_widget.addTab(self.training_tab, "学習")
         self.tab_widget.addTab(self.inference_tab, "推論・モザイク処理")
+        self.tab_widget.addTab(self.models_tab, "モデル管理")
     
     def create_toolbar(self):
         toolbar = QToolBar()
