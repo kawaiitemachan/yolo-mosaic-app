@@ -100,6 +100,7 @@ class InferenceWidget(QWidget):
         super().__init__()
         self.init_ui()
         self.current_image = None
+        self.current_image_path = None
         self.current_detections = []
         
     def init_ui(self):
