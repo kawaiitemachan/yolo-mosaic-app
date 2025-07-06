@@ -242,20 +242,25 @@ class InferenceWidget(QWidget):
     
     def refresh_models(self):
         self.model_combo.clear()
+        print(f"Searching for models in: {MODELS_DIR}")
         
+        model_count = 0
         for model_file in MODELS_DIR.glob("**/*.pt"):
             if "best.pt" in model_file.name or "last.pt" in model_file.name:
                 self.model_combo.addItem(
                     f"{model_file.parent.name}/{model_file.name}",
                     str(model_file)
                 )
+                model_count += 1
+                print(f"Found model: {model_file}")
+        
+        print(f"Total models found: {model_count}")
     
     def load_image(self):
         file_path, _ = QFileDialog.getOpenFileName(
             self, "画像を選択", "", "Image Files (*.jpg *.jpeg *.png)"
         )
         if file_path:
-            self.current_image_path = Path(file_path)
             self.load_and_display_image(file_path)
     
     def load_folder(self):
@@ -273,24 +278,52 @@ class InferenceWidget(QWidget):
     
     def on_file_selected(self, item):
         file_path = item.data(Qt.ItemDataRole.UserRole)
-        self.current_image_path = Path(file_path)
         self.load_and_display_image(file_path)
     
     def load_and_display_image(self, image_path):
+        # パスを保存（重要！）
+        self.current_image_path = Path(image_path)
+        print(f"Loading image: {self.current_image_path}")
+        
         image = cv2.imread(str(image_path))
+        if image is None:
+            print(f"Failed to load image: {image_path}")
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.critical(self, "エラー", f"画像を読み込めませんでした: {image_path}")
+            return
+            
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         self.current_image = image
         self.image_viewer.set_image(image)
         self.apply_mosaic_btn.setEnabled(False)
         self.save_btn.setEnabled(False)
+        print(f"Image loaded successfully: {image.shape}")
     
     def run_inference(self):
-        if not self.current_image_path or self.model_combo.count() == 0:
+        # デバッグ情報を追加
+        print(f"run_inference called - current_image_path: {self.current_image_path}")
+        print(f"model_combo count: {self.model_combo.count()}")
+        
+        if self.current_image_path is None:
+            print("エラー: 画像が選択されていません")
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "警告", "画像を選択してください")
+            return
+            
+        if self.model_combo.count() == 0:
+            print("エラー: モデルが見つかりません")
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "警告", "モデルが見つかりません。学習済みモデルを作成してください")
             return
         
         model_path = self.model_combo.currentData()
         if not model_path:
+            print("エラー: モデルパスが無効です")
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "警告", "有効なモデルを選択してください")
             return
+        
+        print(f"Using model: {model_path}")
         
         self.inference_btn.setEnabled(False)
         
@@ -301,9 +334,11 @@ class InferenceWidget(QWidget):
             self.iou_spin.value()
         )
         self.inference_thread.result_ready.connect(self.on_inference_complete)
-        self.inference_thread.progress.connect(print)
-        self.inference_thread.error.connect(print)
+        self.inference_thread.progress.connect(self.on_inference_progress)
+        self.inference_thread.error.connect(self.on_inference_error)
+        self.inference_thread.finished.connect(lambda: print("Inference thread finished"))
         self.inference_thread.start()
+        print("Inference thread started")
     
     def on_inference_complete(self, image, detections):
         self.current_image = image
@@ -393,3 +428,14 @@ class InferenceWidget(QWidget):
             self
         )
         dialog.exec()
+    
+    def on_inference_progress(self, message):
+        """推論の進捗メッセージを処理"""
+        print(f"推論進捗: {message}")
+    
+    def on_inference_error(self, error_message):
+        """推論エラーを処理"""
+        print(f"推論エラー: {error_message}")
+        from PySide6.QtWidgets import QMessageBox
+        QMessageBox.critical(self, "推論エラー", error_message)
+        self.inference_btn.setEnabled(True)
