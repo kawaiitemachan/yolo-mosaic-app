@@ -1,22 +1,25 @@
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
-                               QLabel, QSpinBox, QComboBox, QTextEdit,
+                               QLabel, QSpinBox, QComboBox, QPlainTextEdit,
                                QProgressBar, QGroupBox, QFileDialog,
-                               QCheckBox, QDialog, QMessageBox)
+                               QCheckBox, QDialog, QMessageBox, QApplication)
 from PySide6.QtCore import Qt, QThread, Signal, QUrl
-from PySide6.QtGui import QDragEnterEvent, QDropEvent
+from PySide6.QtGui import QDragEnterEvent, QDropEvent, QTextCursor
 import yaml
 from pathlib import Path
 import sys
 import io
 import contextlib
+import logging
 
 from ..config import MODELS_DIR, DEFAULT_CONFIG
 from ..utils.device_utils import get_device
 
 class OutputCapture:
-    def __init__(self, signal):
+    """標準出力とエラー出力をキャプチャ"""
+    def __init__(self, signal, is_stderr=False):
         self.signal = signal
-        self.terminal = sys.stdout
+        self.terminal = sys.stderr if is_stderr else sys.stdout
+        self.is_stderr = is_stderr
         
     def write(self, message):
         self.terminal.write(message)
@@ -25,6 +28,20 @@ class OutputCapture:
             
     def flush(self):
         self.terminal.flush()
+        
+    def isatty(self):
+        return False
+
+class LogHandler(logging.Handler):
+    """ログ出力をキャプチャするハンドラー"""
+    def __init__(self, signal):
+        super().__init__()
+        self.signal = signal
+        
+    def emit(self, record):
+        msg = self.format(record)
+        if msg.strip():
+            self.signal.emit(msg)
 
 class TrainingThread(QThread):
     progress = Signal(str)
@@ -48,8 +65,33 @@ class TrainingThread(QThread):
         try:
             from ultralytics import YOLO
             
+            # 標準出力とエラー出力を保存
             old_stdout = sys.stdout
-            sys.stdout = OutputCapture(self.progress)
+            old_stderr = sys.stderr
+            
+            # 出力をキャプチャ
+            sys.stdout = OutputCapture(self.progress, is_stderr=False)
+            sys.stderr = OutputCapture(self.progress, is_stderr=True)
+            
+            # Ultralyticsのロガーをセットアップ
+            ultralytics_logger = logging.getLogger("ultralytics")
+            ultralytics_logger.setLevel(logging.INFO)
+            
+            # 既存のハンドラーを削除
+            for handler in ultralytics_logger.handlers[:]:
+                ultralytics_logger.removeHandler(handler)
+            
+            # カスタムハンドラーを追加
+            log_handler = LogHandler(self.progress)
+            log_handler.setFormatter(logging.Formatter('%(message)s'))
+            ultralytics_logger.addHandler(log_handler)
+            
+            # YOLOのロガーも同様に設定
+            yolo_logger = logging.getLogger("yolo")
+            yolo_logger.setLevel(logging.INFO)
+            for handler in yolo_logger.handlers[:]:
+                yolo_logger.removeHandler(handler)
+            yolo_logger.addHandler(log_handler)
             
             try:
                 self.progress.emit("モデルを読み込み中...")
@@ -67,7 +109,7 @@ class TrainingThread(QThread):
                 
                 self.progress.emit(f"学習を開始します (デバイス: {device})")
                 
-                # Mac環境での追加設定
+                # 学習パラメータの設定
                 import platform
                 train_kwargs = {
                     'data': self.config['data_yaml'],
@@ -79,9 +121,15 @@ class TrainingThread(QThread):
                     'project': str(MODELS_DIR),
                     'name': self.config['project_name'],
                     'exist_ok': True,
-                    'verbose': True,
+                    'verbose': True,  # 詳細なログ出力を有効化
                     'workers': 0,  # マルチプロセッシングを無効化（バスエラー対策）
                 }
+                
+                # 追加のロガー設定
+                import torch
+                torch_logger = logging.getLogger("torch")
+                torch_logger.setLevel(logging.INFO)
+                torch_logger.addHandler(log_handler)
                 
                 # Mac環境では追加の安全対策
                 if platform.system() == 'Darwin':
@@ -107,9 +155,23 @@ class TrainingThread(QThread):
                 self.finished.emit(True, "学習が完了しました")
                 
             finally:
+                # 標準出力とエラー出力を復元
                 sys.stdout = old_stdout
+                sys.stderr = old_stderr
+                
+                # ロガーのハンドラーをクリーンアップ
+                for logger_name in ["ultralytics", "yolo"]:
+                    logger = logging.getLogger(logger_name)
+                    for handler in logger.handlers[:]:
+                        if isinstance(handler, LogHandler):
+                            logger.removeHandler(handler)
                 
         except Exception as e:
+            # エラーが発生した場合も出力を復元
+            if 'old_stdout' in locals():
+                sys.stdout = old_stdout
+            if 'old_stderr' in locals():
+                sys.stderr = old_stderr
             self.finished.emit(False, f"エラー: {str(e)}")
 
 class DatasetDropArea(QWidget):
@@ -214,8 +276,19 @@ class TrainingWidget(QWidget):
         self.progress_bar.hide()
         layout.addWidget(self.progress_bar)
         
-        self.log_text = QTextEdit()
+        self.log_text = QPlainTextEdit()
         self.log_text.setReadOnly(True)
+        self.log_text.setMaximumBlockCount(1000)  # 最大1000行まで保持
+        self.log_text.setStyleSheet("""
+            QPlainTextEdit {
+                font-family: 'Monaco', 'Menlo', 'Consolas', 'Courier New', monospace;
+                font-size: 12px;
+                background-color: #1e1e1e;
+                color: #d4d4d4;
+                border: 1px solid #3e3e3e;
+                padding: 10px;
+            }
+        """)
         layout.addWidget(self.log_text)
         
     def create_data_group(self):
@@ -502,16 +575,25 @@ class TrainingWidget(QWidget):
         self.progress_bar.show()
         self.progress_bar.setRange(0, 0)
         
+        # ログテキストをクリア
+        self.log_text.clear()
+        
         self.training_thread = TrainingThread(config)
         self.training_thread.progress.connect(self.log)
         self.training_thread.finished.connect(self.on_training_finished)
         self.training_thread.start()
     
     def log(self, message):
-        self.log_text.append(message)
-        self.log_text.verticalScrollBar().setValue(
-            self.log_text.verticalScrollBar().maximum()
-        )
+        """ログメッセージを表示"""
+        # メッセージを追加
+        self.log_text.appendPlainText(message)
+        
+        # カーソルを最後に移動して、スクロールバーを最下部に
+        self.log_text.moveCursor(QTextCursor.MoveOperation.End)
+        self.log_text.ensureCursorVisible()
+        
+        # UIを強制的に更新
+        QApplication.processEvents()
     
     def validate_dataset(self):
         """データセットの検証"""
