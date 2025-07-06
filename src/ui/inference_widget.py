@@ -74,25 +74,46 @@ class InferenceThread(QThread):
                                 'confidence': conf
                             })
                 
-                # モザイク適用（output_dirが指定されている場合）
-                if self.output_dir and detections:
-                    processed_image = apply_mosaic_to_regions(
-                        image,
-                        detections,
-                        self.blur_type,
-                        self.strength
-                    )
+                # 出力ディレクトリが指定されている場合
+                if self.output_dir:
+                    # サブフォルダを作成
+                    detected_dir = Path(self.output_dir) / "検出あり"
+                    undetected_dir = Path(self.output_dir) / "未検出"
+                    detected_dir.mkdir(parents=True, exist_ok=True)
+                    undetected_dir.mkdir(parents=True, exist_ok=True)
                     
-                    # 保存
-                    output_path = Path(self.output_dir) / Path(image_path).name
-                    image_bgr = cv2.cvtColor(processed_image, cv2.COLOR_RGB2BGR)
-                    cv2.imwrite(str(output_path), image_bgr)
-                    self.progress.emit(f"保存: {output_path.name}")
+                    if detections:
+                        # 検出がある場合: モザイク適用して保存
+                        processed_image = apply_mosaic_to_regions(
+                            image,
+                            detections,
+                            self.blur_type,
+                            self.strength
+                        )
+                        
+                        output_path = detected_dir / Path(image_path).name
+                        image_bgr = cv2.cvtColor(processed_image, cv2.COLOR_RGB2BGR)
+                        cv2.imwrite(str(output_path), image_bgr)
+                        self.progress.emit(f"保存[検出あり]: {output_path.name}")
+                    else:
+                        # 検出がない場合: 元画像をコピー
+                        output_path = undetected_dir / Path(image_path).name
+                        image_bgr = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+                        cv2.imwrite(str(output_path), image_bgr)
+                        self.progress.emit(f"保存[未検出]: {output_path.name}")
                 
                 # 結果を送信
                 self.result_ready.emit(image, detections, str(image_path))
             
             self.progress.emit("全ての処理が完了しました")
+            
+            # 処理結果のサマリーを出力
+            if self.output_dir:
+                detected_dir = Path(self.output_dir) / "検出あり"
+                undetected_dir = Path(self.output_dir) / "未検出"
+                detected_count = len(list(detected_dir.glob("*.*"))) if detected_dir.exists() else 0
+                undetected_count = len(list(undetected_dir.glob("*.*"))) if undetected_dir.exists() else 0
+                self.progress.emit(f"処理完了: 検出あり {detected_count}枚, 未検出 {undetected_count}枚")
             
         except Exception as e:
             self.error.emit(f"エラー: {str(e)}")
@@ -179,6 +200,23 @@ class InferenceWidget(QWidget):
         self.file_list = QListWidget()
         self.file_list.itemClicked.connect(self.on_file_selected)
         layout.addWidget(self.file_list)
+        
+        # 出力先フォルダ設定
+        output_group = QGroupBox("出力先設定")
+        output_layout = QVBoxLayout(output_group)
+        
+        path_layout = QHBoxLayout()
+        self.output_path_edit = QLineEdit()
+        self.output_path_edit.setPlaceholderText("出力先フォルダを選択...")
+        self.output_path_edit.setReadOnly(True)
+        path_layout.addWidget(self.output_path_edit)
+        
+        browse_output_btn = QPushButton("参照...")
+        browse_output_btn.clicked.connect(self.browse_output_folder)
+        path_layout.addWidget(browse_output_btn)
+        
+        output_layout.addLayout(path_layout)
+        layout.addWidget(output_group)
         
         self.inference_btn = QPushButton("推論実行")
         self.inference_btn.clicked.connect(self.run_inference)
@@ -327,6 +365,8 @@ class InferenceWidget(QWidget):
             self, "画像を選択", "", "Image Files (*.jpg *.jpeg *.png)"
         )
         if file_path:
+            self.folder_mode = False  # 単一画像モードに切り替え
+            self.image_files = []
             self.load_and_display_image(file_path)
     
     def load_folder(self):
@@ -359,6 +399,13 @@ class InferenceWidget(QWidget):
     def on_file_selected(self, item):
         file_path = item.data(Qt.ItemDataRole.UserRole)
         self.load_and_display_image(file_path)
+    
+    def browse_output_folder(self):
+        """出力先フォルダを選択"""
+        folder = QFileDialog.getExistingDirectory(self, "出力先フォルダを選択")
+        if folder:
+            self.output_path_edit.setText(folder)
+            self.save_settings()
     
     def load_and_display_image(self, image_path):
         # パスを保存（重要！）
@@ -396,10 +443,11 @@ class InferenceWidget(QWidget):
         if self.folder_mode and self.image_files:
             print(f"フォルダモード: {len(self.image_files)} 枚の画像を処理")
             
-            # 出力フォルダを選択
-            from PySide6.QtWidgets import QFileDialog, QMessageBox
-            output_folder = QFileDialog.getExistingDirectory(self, "出力フォルダを選択")
+            # 出力フォルダの確認
+            output_folder = self.output_path_edit.text()
             if not output_folder:
+                from PySide6.QtWidgets import QMessageBox
+                QMessageBox.warning(self, "警告", "出力先フォルダを指定してください")
                 return
             
             # モザイク設定を取得
@@ -425,6 +473,9 @@ class InferenceWidget(QWidget):
             blur_type = self.blur_type_combo.currentText()
             strength = self.tile_size_spin.value() if blur_type == 'tile' else self.blur_strength_slider.value()
             
+            # 出力フォルダを取得（単一画像でも保存可能）
+            output_folder = self.output_path_edit.text() if self.output_path_edit.text() else None
+            
             self.inference_btn.setEnabled(False)
             self.inference_thread = InferenceThread(
                 model_path,
@@ -433,7 +484,7 @@ class InferenceWidget(QWidget):
                 self.iou_spin.value(),
                 blur_type,
                 strength,
-                None   # output_dir
+                output_folder  # 単一画像でも出力フォルダを使用
             )
         
         else:
@@ -530,6 +581,7 @@ class InferenceWidget(QWidget):
         self.settings.setValue("tile_size", self.tile_size_spin.value())
         self.settings.setValue("preserve_png", self.preserve_png_check.isChecked())
         self.settings.setValue("parallel_count", self.parallel_spin.value())
+        self.settings.setValue("output_folder", self.output_path_edit.text())
     
     def load_settings(self):
         """設定を読み込み"""
@@ -563,3 +615,7 @@ class InferenceWidget(QWidget):
         # 並列処理数
         parallel_count = self.settings.value("parallel_count", 1, type=int)
         self.parallel_spin.setValue(parallel_count)
+        
+        # 出力フォルダ
+        output_folder = self.settings.value("output_folder", "")
+        self.output_path_edit.setText(output_folder)
