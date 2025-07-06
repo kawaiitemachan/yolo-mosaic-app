@@ -12,55 +12,87 @@ from ..config import MODELS_DIR, DEFAULT_CONFIG
 from ..utils.device_utils import get_device
 
 class InferenceThread(QThread):
-    result_ready = Signal(np.ndarray, list)
+    result_ready = Signal(np.ndarray, list, str)  # 画像パスを追加
     progress = Signal(str)
     error = Signal(str)
     
-    def __init__(self, model_path, image_path, confidence, iou):
+    def __init__(self, model_path, image_paths, confidence, iou, blur_type, strength, output_dir=None):
         super().__init__()
         self.model_path = model_path
-        self.image_path = image_path
+        self.image_paths = image_paths if isinstance(image_paths, list) else [image_paths]
         self.confidence = confidence
         self.iou = iou
+        self.blur_type = blur_type
+        self.strength = strength
+        self.output_dir = output_dir
         
     def run(self):
         try:
             from ultralytics import YOLO
+            from ..inference.mosaic import apply_mosaic_to_regions
             
             self.progress.emit("モデルを読み込み中...")
             model = YOLO(self.model_path)
             
             device, _ = get_device()
             
-            self.progress.emit("推論を実行中...")
-            results = model(
-                self.image_path,
-                conf=self.confidence,
-                iou=self.iou,
-                device=device
-            )
+            total_images = len(self.image_paths)
+            for idx, image_path in enumerate(self.image_paths):
+                self.progress.emit(f"処理中 ({idx + 1}/{total_images}): {Path(image_path).name}")
+                
+                # 推論実行
+                results = model(
+                    str(image_path),
+                    conf=self.confidence,
+                    iou=self.iou,
+                    device=device
+                )
+                
+                # 画像読み込み
+                image = cv2.imread(str(image_path))
+                if image is None:
+                    self.error.emit(f"画像を読み込めません: {image_path}")
+                    continue
+                    
+                image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+                
+                # 検出結果を処理
+                detections = []
+                for r in results:
+                    if r.masks is not None:
+                        for i, mask in enumerate(r.masks.data):
+                            mask_np = mask.cpu().numpy()
+                            mask_resized = cv2.resize(mask_np, (image.shape[1], image.shape[0]))
+                            
+                            cls = int(r.boxes.cls[i])
+                            conf = float(r.boxes.conf[i])
+                            label = model.names[cls]
+                            
+                            detections.append({
+                                'mask': mask_resized > 0.5,
+                                'label': label,
+                                'confidence': conf
+                            })
+                
+                # モザイク適用（output_dirが指定されている場合）
+                if self.output_dir and detections:
+                    processed_image = apply_mosaic_to_regions(
+                        image,
+                        detections,
+                        self.blur_type,
+                        self.strength
+                    )
+                    
+                    # 保存
+                    output_path = Path(self.output_dir) / Path(image_path).name
+                    image_bgr = cv2.cvtColor(processed_image, cv2.COLOR_RGB2BGR)
+                    cv2.imwrite(str(output_path), image_bgr)
+                    self.progress.emit(f"保存: {output_path.name}")
+                
+                # 結果を送信
+                self.result_ready.emit(image, detections, str(image_path))
             
-            image = cv2.imread(str(self.image_path))
-            image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-            
-            detections = []
-            for r in results:
-                if r.masks is not None:
-                    for i, mask in enumerate(r.masks.data):
-                        mask_np = mask.cpu().numpy()
-                        mask_resized = cv2.resize(mask_np, (image.shape[1], image.shape[0]))
-                        
-                        cls = int(r.boxes.cls[i])
-                        conf = float(r.boxes.conf[i])
-                        label = model.names[cls]
-                        
-                        detections.append({
-                            'mask': mask_resized > 0.5,
-                            'label': label,
-                            'confidence': conf
-                        })
-            
-            self.result_ready.emit(image, detections)
+            self.progress.emit("全ての処理が完了しました")
             
         except Exception as e:
             self.error.emit(f"エラー: {str(e)}")
@@ -102,6 +134,9 @@ class InferenceWidget(QWidget):
         self.current_image = None
         self.current_image_path = None
         self.current_detections = []
+        self.folder_mode = False
+        self.folder_path = None
+        self.image_files = []
         
     def init_ui(self):
         layout = QHBoxLayout(self)
@@ -157,9 +192,15 @@ class InferenceWidget(QWidget):
         self.save_btn.setEnabled(False)
         layout.addWidget(self.save_btn)
         
-        self.batch_process_btn = QPushButton("バッチ処理")
-        self.batch_process_btn.clicked.connect(self.batch_process)
-        layout.addWidget(self.batch_process_btn)
+        # 並列処理数の設定
+        parallel_layout = QHBoxLayout()
+        parallel_layout.addWidget(QLabel("並列処理数:"))
+        self.parallel_spin = QSpinBox()
+        self.parallel_spin.setRange(1, 8)
+        self.parallel_spin.setValue(1)
+        self.parallel_spin.setToolTip("同時に処理する画像数（1=順次処理）")
+        parallel_layout.addWidget(self.parallel_spin)
+        layout.addLayout(parallel_layout)
         
         layout.addStretch()
         return widget
@@ -385,49 +426,15 @@ class InferenceWidget(QWidget):
             image_bgr = cv2.cvtColor(self.processed_image, cv2.COLOR_RGB2BGR)
             cv2.imwrite(file_path, image_bgr)
     
-    def batch_process(self):
-        if self.model_combo.count() == 0:
-            return
+    def on_inference_finished(self):
+        """推論スレッドが終了したときの処理"""
+        print("推論スレッド終了")
+        self.inference_btn.setEnabled(True)
         
-        input_folder = QFileDialog.getExistingDirectory(self, "入力フォルダを選択")
-        if not input_folder:
-            return
-            
-        output_folder = QFileDialog.getExistingDirectory(self, "出力フォルダを選択")
-        if not output_folder:
-            return
-        
-        from pathlib import Path
-        from ..inference.mosaic import batch_process_images
-        
-        input_path = Path(input_folder)
-        image_paths = list(input_path.glob("*.png")) + list(input_path.glob("*.jpg")) + list(input_path.glob("*.jpeg"))
-        
-        if not image_paths:
-            return
-        
-        model_path = self.model_combo.currentData()
-        blur_type = self.blur_type_combo.currentText()
-        strength = self.tile_size_spin.value() if blur_type == 'tile' else self.blur_strength_slider.value()
-        
-        from .batch_process_dialog import BatchProcessDialog
-        
-        config = {
-            'confidence': self.conf_spin.value(),
-            'iou': self.iou_spin.value(),
-            'blur_type': blur_type,
-            'strength': strength,
-            'preserve_png_info': self.preserve_png_check.isChecked()
-        }
-        
-        dialog = BatchProcessDialog(
-            image_paths,
-            model_path,
-            output_folder,
-            config,
-            self
-        )
-        dialog.exec()
+        if self.folder_mode:
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.information(self, "完了", "全ての画像の処理が完了しました")
+    
     
     def on_inference_progress(self, message):
         """推論の進捗メッセージを処理"""
