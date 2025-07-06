@@ -96,7 +96,7 @@ class RecentDatasetsDialog(QDialog):
     
     def on_selection_changed(self, current, previous):
         """選択が変更されたときの処理"""
-        if current and not current.isDisabled():
+        if current and not (current.flags() & Qt.ItemFlag.ItemIsEnabled == 0):
             self.open_btn.setEnabled(True)
             self.remove_btn.setEnabled(True)
         else:
@@ -105,7 +105,7 @@ class RecentDatasetsDialog(QDialog):
     
     def on_item_double_clicked(self, item):
         """アイテムがダブルクリックされたときの処理"""
-        if not item.isDisabled():
+        if item.flags() & Qt.ItemFlag.ItemIsEnabled:
             self.accept_selection()
     
     def accept_selection(self):

@@ -2,10 +2,10 @@ task: segment
 mode: train
 model: yolo11n-seg.pt
 data: /Users/tao/Desktop/dev/mosaic_app/sample_dataset/data.yaml
-epochs: 30
+epochs: 100
 time: null
 patience: 50
-batch: 16
+batch: 4
 imgsz: 640
 save: true
 save_period: -1
