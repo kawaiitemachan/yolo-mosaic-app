@@ -1,7 +1,8 @@
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                                QLabel, QSlider, QComboBox, QListWidget,
                                QSplitter, QFileDialog, QListWidgetItem,
-                               QGroupBox, QDoubleSpinBox, QCheckBox, QSpinBox)
+                               QGroupBox, QDoubleSpinBox, QCheckBox, QSpinBox,
+                               QLineEdit, QMessageBox)
 from PySide6.QtCore import Qt, QThread, Signal, QSettings
 from PySide6.QtGui import QImage, QPixmap, QPainter
 import cv2
