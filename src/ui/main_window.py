@@ -50,16 +50,19 @@ class MainWindow(QMainWindow):
         from .annotation_widget import AnnotationWidget
         from .training_widget import TrainingWidget
         from .inference_widget import InferenceWidget
+        from .dataset_manager_widget import DatasetManagerWidget
         from .models_manager_widget import ModelsManagerWidget
         
         self.annotation_tab = AnnotationWidget()
         self.training_tab = TrainingWidget()
         self.inference_tab = InferenceWidget()
+        self.dataset_tab = DatasetManagerWidget()
         self.models_tab = ModelsManagerWidget()
         
         self.tab_widget.addTab(self.annotation_tab, "アノテーション")
         self.tab_widget.addTab(self.training_tab, "学習")
         self.tab_widget.addTab(self.inference_tab, "推論・モザイク処理")
+        self.tab_widget.addTab(self.dataset_tab, "データセット管理")
         self.tab_widget.addTab(self.models_tab, "モデル管理")
     
     def create_toolbar(self):

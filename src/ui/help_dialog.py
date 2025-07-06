@@ -45,10 +45,11 @@ class HelpDialog(QDialog):
         """目次を追加"""
         contents = [
             ("はじめに", "introduction"),
-            ("データセット管理と自動保存", "dataset"),
+            ("データセット作成と自動保存", "dataset"),
             ("アノテーション機能", "annotation"),
             ("学習機能", "training"),
             ("推論・モザイク処理", "inference"),
+            ("データセット管理タブ", "dataset_manager"),
             ("モデル管理", "models"),
             ("バッチ処理", "batch"),
             ("設定とカスタマイズ", "settings"),
@@ -138,7 +139,7 @@ class HelpDialog(QDialog):
 """,
             
             "dataset": style + """
-<h2>データセット管理と自動保存</h2>
+<h2>データセット作成と自動保存</h2>
 
 <h3>データセットの選択</h3>
 <ol>
@@ -540,6 +541,95 @@ class HelpDialog(QDialog):
 <li>画像生成AIのプロンプト情報などを維持</li>
 <li>ファイルサイズが若干大きくなる可能性</li>
 </ul>
+</div>
+""",
+            
+            "dataset_manager": """
+<h2>データセット管理</h2>
+
+<h3>データセット管理タブの機能</h3>
+<p>データセット管理タブでは、作成したデータセットの一覧表示と管理を行います。</p>
+
+<h3>データセット一覧</h3>
+<table>
+<tr>
+    <th>表示項目</th>
+    <th>説明</th>
+</tr>
+<tr>
+    <td><b>データセット名</b></td>
+    <td>データセットフォルダの名前</td>
+</tr>
+<tr>
+    <td><b>クラス数</b></td>
+    <td>data.yamlに定義されたクラス数</td>
+</tr>
+<tr>
+    <td><b>画像数</b></td>
+    <td>全体の画像ファイル数（train + valid）</td>
+</tr>
+<tr>
+    <td><b>最終更新</b></td>
+    <td>データセットの最終更新日時</td>
+</tr>
+</table>
+
+<h3>データセット操作</h3>
+<div class="info-box">
+<p>以下の操作は右クリックメニューまたはツールバーから実行できます：</p>
+</div>
+
+<table>
+<tr>
+    <th>操作</th>
+    <th>説明</th>
+</tr>
+<tr>
+    <td><b>詳細情報</b></td>
+    <td>データセットの詳細情報とサンプル画像の表示</td>
+</tr>
+<tr>
+    <td><b>名前変更</b></td>
+    <td>データセットフォルダの名前を変更</td>
+</tr>
+<tr>
+    <td><b>削除</b></td>
+    <td>データセットを完全に削除（確認ダイアログあり）</td>
+</tr>
+<tr>
+    <td><b>Finderで開く</b></td>
+    <td>データセットフォルダをFinderで直接開く</td>
+</tr>
+</table>
+
+<h3>データセットの詳細情報</h3>
+<p>詳細情報ダイアログでは以下を確認できます：</p>
+<ul>
+<li><b>基本情報：</b>パス、クラス数、クラス名</li>
+<li><b>データ分布：</b>訓練/検証データの画像数とラベル数</li>
+<li><b>ラベル率：</b>ラベル付けされた画像の割合</li>
+<li><b>サンプル画像：</b>ランダムに選択された画像のプレビュー</li>
+</ul>
+
+<h3>データセット構造</h3>
+<table width="100%" style="background-color: #eff6ff; border: 1px solid #3b82f6; margin: 10px 0;">
+<tr><td style="padding: 10px; font-family: monospace;">
+datasets/<br>
+├── sample_dataset/<br>
+│   ├── train/<br>
+│   │   ├── images/    ← 訓練用画像<br>
+│   │   └── labels/    ← 訓練用ラベル（YOLO形式）<br>
+│   ├── valid/<br>
+│   │   ├── images/    ← 検証用画像<br>
+│   │   └── labels/    ← 検証用ラベル<br>
+│   └── data.yaml      ← データセット設定<br>
+└── other_dataset/
+</td></tr>
+</table>
+
+<h3>自動更新機能</h3>
+<div class="tip-box">
+<p>データセット一覧は5秒ごとに自動更新されます。新しく作成されたデータセットは自動的にリストに追加されます。</p>
 </div>
 """,
             
