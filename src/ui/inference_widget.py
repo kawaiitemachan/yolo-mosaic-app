@@ -2,7 +2,7 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                                QLabel, QSlider, QComboBox, QListWidget,
                                QSplitter, QFileDialog, QListWidgetItem,
                                QGroupBox, QDoubleSpinBox, QCheckBox, QSpinBox)
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import Qt, QThread, Signal, QSettings
 from PySide6.QtGui import QImage, QPixmap, QPainter
 import cv2
 import numpy as np
@@ -130,6 +130,7 @@ class ImageViewer(QWidget):
 class InferenceWidget(QWidget):
     def __init__(self):
         super().__init__()
+        self.settings = QSettings("YoloMosaicApp", "Inference")
         self.init_ui()
         self.current_image = None
         self.current_image_path = None
@@ -137,6 +138,7 @@ class InferenceWidget(QWidget):
         self.folder_mode = False
         self.folder_path = None
         self.image_files = []
+        self.load_settings()
         
     def init_ui(self):
         layout = QHBoxLayout(self)
@@ -199,6 +201,7 @@ class InferenceWidget(QWidget):
         self.parallel_spin.setRange(1, 8)
         self.parallel_spin.setValue(1)
         self.parallel_spin.setToolTip("同時に処理する画像数（1=順次処理）")
+        self.parallel_spin.valueChanged.connect(self.save_settings)
         parallel_layout.addWidget(self.parallel_spin)
         layout.addLayout(parallel_layout)
         
@@ -229,6 +232,7 @@ class InferenceWidget(QWidget):
         self.conf_spin.setRange(0.0, 1.0)
         self.conf_spin.setSingleStep(0.05)
         self.conf_spin.setValue(DEFAULT_CONFIG["inference"]["confidence"])
+        self.conf_spin.valueChanged.connect(self.save_settings)
         conf_layout.addWidget(self.conf_spin)
         layout.addLayout(conf_layout)
         
@@ -238,6 +242,7 @@ class InferenceWidget(QWidget):
         self.iou_spin.setRange(0.0, 1.0)
         self.iou_spin.setSingleStep(0.05)
         self.iou_spin.setValue(DEFAULT_CONFIG["inference"]["iou"])
+        self.iou_spin.valueChanged.connect(self.save_settings)
         iou_layout.addWidget(self.iou_spin)
         layout.addLayout(iou_layout)
         
@@ -251,6 +256,7 @@ class InferenceWidget(QWidget):
         blur_type_layout.addWidget(QLabel("モザイクタイプ:"))
         self.blur_type_combo = QComboBox()
         self.blur_type_combo.addItems(["gaussian", "pixelate", "blur", "black", "white", "tile"])
+        self.blur_type_combo.currentTextChanged.connect(self.save_settings)
         blur_type_layout.addWidget(self.blur_type_combo)
         layout.addLayout(blur_type_layout)
         
@@ -260,9 +266,7 @@ class InferenceWidget(QWidget):
         self.blur_strength_slider.setRange(1, 50)
         self.blur_strength_slider.setValue(DEFAULT_CONFIG["inference"]["blur_strength"])
         self.blur_strength_label = QLabel(str(DEFAULT_CONFIG["inference"]["blur_strength"]))
-        self.blur_strength_slider.valueChanged.connect(
-            lambda v: self.blur_strength_label.setText(str(v))
-        )
+        self.blur_strength_slider.valueChanged.connect(self.on_blur_strength_changed)
         blur_strength_layout.addWidget(self.blur_strength_slider)
         blur_strength_layout.addWidget(self.blur_strength_label)
         layout.addLayout(blur_strength_layout)
@@ -272,11 +276,13 @@ class InferenceWidget(QWidget):
         self.tile_size_spin = QSpinBox()
         self.tile_size_spin.setRange(1, 100)
         self.tile_size_spin.setValue(10)
+        self.tile_size_spin.valueChanged.connect(self.save_settings)
         tile_size_layout.addWidget(self.tile_size_spin)
         layout.addLayout(tile_size_layout)
         
         self.preserve_png_check = QCheckBox("PNGメタデータを保持")
         self.preserve_png_check.setChecked(True)
+        self.preserve_png_check.stateChanged.connect(self.save_settings)
         layout.addWidget(self.preserve_png_check)
         
         return group
@@ -308,14 +314,28 @@ class InferenceWidget(QWidget):
         folder = QFileDialog.getExistingDirectory(self, "フォルダを選択")
         if folder:
             self.file_list.clear()
-            folder_path = Path(folder)
+            self.folder_path = Path(folder)
+            self.folder_mode = True
             
-            for img_path in sorted(folder_path.glob("*.jpg")) + \
-                           sorted(folder_path.glob("*.jpeg")) + \
-                           sorted(folder_path.glob("*.png")):
+            # 画像ファイルを収集
+            self.image_files = []
+            for img_path in sorted(self.folder_path.glob("*.jpg")) + \
+                           sorted(self.folder_path.glob("*.jpeg")) + \
+                           sorted(self.folder_path.glob("*.png")):
                 item = QListWidgetItem(img_path.name)
                 item.setData(Qt.ItemDataRole.UserRole, str(img_path))
                 self.file_list.addItem(item)
+                self.image_files.append(str(img_path))
+            
+            # フォルダ情報を表示
+            if self.image_files:
+                from PySide6.QtWidgets import QMessageBox
+                QMessageBox.information(
+                    self, 
+                    "フォルダ選択", 
+                    f"{len(self.image_files)} 枚の画像が見つかりました\n"
+                    f"推論実行ボタンで全ての画像を処理します"
+                )
     
     def on_file_selected(self, item):
         file_path = item.data(Qt.ItemDataRole.UserRole)
@@ -341,60 +361,90 @@ class InferenceWidget(QWidget):
         print(f"Image loaded successfully: {image.shape}")
     
     def run_inference(self):
-        # デバッグ情報を追加
-        print(f"run_inference called - current_image_path: {self.current_image_path}")
-        print(f"model_combo count: {self.model_combo.count()}")
-        
-        if self.current_image_path is None:
-            print("エラー: 画像が選択されていません")
-            from PySide6.QtWidgets import QMessageBox
-            QMessageBox.warning(self, "警告", "画像を選択してください")
-            return
-            
+        # モデルチェック
         if self.model_combo.count() == 0:
-            print("エラー: モデルが見つかりません")
             from PySide6.QtWidgets import QMessageBox
             QMessageBox.warning(self, "警告", "モデルが見つかりません。学習済みモデルを作成してください")
             return
         
         model_path = self.model_combo.currentData()
         if not model_path:
-            print("エラー: モデルパスが無効です")
             from PySide6.QtWidgets import QMessageBox
             QMessageBox.warning(self, "警告", "有効なモデルを選択してください")
             return
         
-        print(f"Using model: {model_path}")
+        # フォルダモードの場合
+        if self.folder_mode and self.image_files:
+            print(f"フォルダモード: {len(self.image_files)} 枚の画像を処理")
+            
+            # 出力フォルダを選択
+            from PySide6.QtWidgets import QFileDialog, QMessageBox
+            output_folder = QFileDialog.getExistingDirectory(self, "出力フォルダを選択")
+            if not output_folder:
+                return
+            
+            # モザイク設定を取得
+            blur_type = self.blur_type_combo.currentText()
+            strength = self.tile_size_spin.value() if blur_type == 'tile' else self.blur_strength_slider.value()
+            
+            self.inference_btn.setEnabled(False)
+            self.inference_thread = InferenceThread(
+                model_path,
+                self.image_files,  # リストを渡す
+                self.conf_spin.value(),
+                self.iou_spin.value(),
+                blur_type,
+                strength,
+                output_folder
+            )
         
-        self.inference_btn.setEnabled(False)
+        # 単一画像モード
+        elif self.current_image_path:
+            print(f"単一画像モード: {self.current_image_path}")
+            
+            # モザイク設定を取得（単一画像でも必要）
+            blur_type = self.blur_type_combo.currentText()
+            strength = self.tile_size_spin.value() if blur_type == 'tile' else self.blur_strength_slider.value()
+            
+            self.inference_btn.setEnabled(False)
+            self.inference_thread = InferenceThread(
+                model_path,
+                str(self.current_image_path),
+                self.conf_spin.value(),
+                self.iou_spin.value(),
+                blur_type,
+                strength,
+                None   # output_dir
+            )
         
-        self.inference_thread = InferenceThread(
-            model_path,
-            self.current_image_path,
-            self.conf_spin.value(),
-            self.iou_spin.value()
-        )
+        else:
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "警告", "画像またはフォルダを選択してください")
+            return
+        
+        # 共通のシグナル接続
         self.inference_thread.result_ready.connect(self.on_inference_complete)
         self.inference_thread.progress.connect(self.on_inference_progress)
         self.inference_thread.error.connect(self.on_inference_error)
-        self.inference_thread.finished.connect(lambda: print("Inference thread finished"))
+        self.inference_thread.finished.connect(self.on_inference_finished)
         self.inference_thread.start()
         print("Inference thread started")
     
-    def on_inference_complete(self, image, detections):
-        self.current_image = image
-        self.current_detections = detections
-        self.inference_btn.setEnabled(True)
-        self.apply_mosaic_btn.setEnabled(True)
-        
-        display_image = image.copy()
-        for det in detections:
-            mask = det['mask']
-            overlay = display_image.copy()
-            overlay[mask] = [255, 0, 0]
-            display_image = cv2.addWeighted(display_image, 0.7, overlay, 0.3, 0)
-        
-        self.image_viewer.set_image(display_image)
+    def on_inference_complete(self, image, detections, image_path):
+        # フォルダモードの場合は画面更新をスキップ（最後の画像のみ表示）
+        if not self.folder_mode or (self.image_files and image_path == self.image_files[-1]):
+            self.current_image = image
+            self.current_detections = detections
+            self.apply_mosaic_btn.setEnabled(True)
+            
+            display_image = image.copy()
+            for det in detections:
+                mask = det['mask']
+                overlay = display_image.copy()
+                overlay[mask] = [255, 0, 0]
+                display_image = cv2.addWeighted(display_image, 0.7, overlay, 0.3, 0)
+            
+            self.image_viewer.set_image(display_image)
     
     def apply_mosaic(self):
         if not self.current_detections:
@@ -446,3 +496,51 @@ class InferenceWidget(QWidget):
         from PySide6.QtWidgets import QMessageBox
         QMessageBox.critical(self, "推論エラー", error_message)
         self.inference_btn.setEnabled(True)
+    
+    def on_blur_strength_changed(self, value):
+        """ブラー強度スライダーの値が変更されたとき"""
+        self.blur_strength_label.setText(str(value))
+        self.save_settings()
+    
+    def save_settings(self):
+        """設定を保存"""
+        self.settings.setValue("confidence", self.conf_spin.value())
+        self.settings.setValue("iou", self.iou_spin.value())
+        self.settings.setValue("blur_type", self.blur_type_combo.currentText())
+        self.settings.setValue("blur_strength", self.blur_strength_slider.value())
+        self.settings.setValue("tile_size", self.tile_size_spin.value())
+        self.settings.setValue("preserve_png", self.preserve_png_check.isChecked())
+        self.settings.setValue("parallel_count", self.parallel_spin.value())
+    
+    def load_settings(self):
+        """設定を読み込み"""
+        # 信頼度閾値
+        confidence = self.settings.value("confidence", DEFAULT_CONFIG["inference"]["confidence"], type=float)
+        self.conf_spin.setValue(confidence)
+        
+        # IoU閾値
+        iou = self.settings.value("iou", DEFAULT_CONFIG["inference"]["iou"], type=float)
+        self.iou_spin.setValue(iou)
+        
+        # モザイクタイプ
+        blur_type = self.settings.value("blur_type", DEFAULT_CONFIG["inference"]["blur_type"])
+        index = self.blur_type_combo.findText(blur_type)
+        if index >= 0:
+            self.blur_type_combo.setCurrentIndex(index)
+        
+        # モザイク強度
+        blur_strength = self.settings.value("blur_strength", DEFAULT_CONFIG["inference"]["blur_strength"], type=int)
+        self.blur_strength_slider.setValue(blur_strength)
+        self.blur_strength_label.setText(str(blur_strength))
+        
+        # タイルサイズ
+        tile_size = self.settings.value("tile_size", 10, type=int)
+        self.tile_size_spin.setValue(tile_size)
+        
+        # PNGメタデータ保持
+        preserve_png = self.settings.value("preserve_png", True, type=bool)
+        self.preserve_png_check.setChecked(preserve_png)
+        
+        # 並列処理数
+        parallel_count = self.settings.value("parallel_count", 1, type=int)
+        self.parallel_spin.setValue(parallel_count)
