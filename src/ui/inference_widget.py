@@ -292,14 +292,33 @@ class InferenceWidget(QWidget):
         print(f"Searching for models in: {MODELS_DIR}")
         
         model_count = 0
+        # モデルフォルダ（データセット）ごとに集約
+        model_dirs = {}
+        
         for model_file in MODELS_DIR.glob("**/*.pt"):
             if "best.pt" in model_file.name or "last.pt" in model_file.name:
-                self.model_combo.addItem(
-                    f"{model_file.parent.name}/{model_file.name}",
-                    str(model_file)
-                )
+                # weightsフォルダの親ディレクトリ（データセット名）を取得
+                if model_file.parent.name == "weights":
+                    dataset_name = model_file.parent.parent.name
+                else:
+                    dataset_name = model_file.parent.name
+                
+                if dataset_name not in model_dirs:
+                    model_dirs[dataset_name] = {"best": None, "last": None}
+                
+                if "best.pt" in model_file.name:
+                    model_dirs[dataset_name]["best"] = str(model_file)
+                elif "last.pt" in model_file.name:
+                    model_dirs[dataset_name]["last"] = str(model_file)
+        
+        # データセット名でコンボボックスに追加
+        for dataset_name, paths in sorted(model_dirs.items()):
+            # best.ptを優先、なければlast.ptを使用
+            model_path = paths["best"] if paths["best"] else paths["last"]
+            if model_path:
+                self.model_combo.addItem(dataset_name, model_path)
                 model_count += 1
-                print(f"Found model: {model_file}")
+                print(f"Found model: {dataset_name} -> {model_path}")
         
         print(f"Total models found: {model_count}")
     
