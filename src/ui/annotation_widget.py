@@ -33,6 +33,9 @@ class ImageCanvas(QWidget):
         # サイズポリシーを設定（拡張可能）
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         
+        # キーボードフォーカスを受け取れるようにする
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        
         # 編集モード関連
         self.selected_polygon_index = -1  # 選択されたポリゴンのインデックス
         self.selected_point_index = -1   # 選択された点のインデックス
@@ -352,6 +355,9 @@ class ImageCanvas(QWidget):
         elif event.key() == Qt.Key.Key_Y and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
             # リドゥ
             self.redo()
+        else:
+            # その他のキーは親ウィジェットで処理
+            super().keyPressEvent(event)
     
     def complete_polygon(self):
         if len(self.current_polygon) >= 3:
@@ -621,6 +627,7 @@ class AnnotationWidget(QWidget):
         self.dataset_path = None
         self.images_folder = None
         self.current_split = "train"  # train or valid
+        self.current_image_index = -1  # 現在選択されている画像のインデックス
         self.init_ui()
         self.current_image_path = None
     
@@ -671,6 +678,20 @@ class AnnotationWidget(QWidget):
         self.image_list.itemClicked.connect(self.on_image_selected)
         layout.addWidget(self.image_list)
         
+        # 画像ナビゲーションボタン
+        nav_layout = QHBoxLayout()
+        self.prev_btn = QPushButton("◀ 前の画像")
+        self.prev_btn.clicked.connect(self.go_to_previous_image)
+        self.next_btn = QPushButton("次の画像 ▶")
+        self.next_btn.clicked.connect(self.go_to_next_image)
+        nav_layout.addWidget(self.prev_btn)
+        nav_layout.addWidget(self.next_btn)
+        layout.addLayout(nav_layout)
+        
+        # ボタンの初期状態を無効に
+        self.prev_btn.setEnabled(False)
+        self.next_btn.setEnabled(False)
+        
         layout.addWidget(QLabel("ラベル:"))
         self.label_combo = QComboBox()
         self.label_combo.currentTextChanged.connect(self.canvas.set_label)
@@ -709,6 +730,9 @@ class AnnotationWidget(QWidget):
             "• ポリゴンをクリック: 選択\n"
             "• Delete/Backspace: 削除\n"
             "• 右クリック: メニュー表示\n\n"
+            "【画像ナビゲーション】\n"
+            "• ←/→ キー: 前後の画像へ移動\n"
+            "• ボタンクリック: 前後の画像へ\n\n"
             "【その他】\n"
             "• Ctrl+Z: 元に戻す\n"
             "• Ctrl+Y: やり直す"
@@ -808,16 +832,23 @@ class AnnotationWidget(QWidget):
             return
             
         self.image_list.clear()
+        self.current_image_index = -1
         
         for img_path in sorted(self.images_folder.glob("*.jpg")) + sorted(self.images_folder.glob("*.png")):
             item = QListWidgetItem(img_path.name)
             item.setData(Qt.ItemDataRole.UserRole, str(img_path))
             self.image_list.addItem(item)
+        
+        # ナビゲーションボタンの状態を更新
+        self.update_navigation_buttons()
     
     def on_image_selected(self, item):
         # 現在の画像のアノテーションを自動保存
         if self.current_image_path and self.canvas.polygons:
             self.save_annotations(silent=True)
+        
+        # インデックスを更新
+        self.current_image_index = self.image_list.row(item)
         
         image_path = item.data(Qt.ItemDataRole.UserRole)
         self.current_image_path = Path(image_path)
@@ -825,6 +856,9 @@ class AnnotationWidget(QWidget):
         
         # 既存のアノテーションを読み込む
         self.load_existing_annotations()
+        
+        # ナビゲーションボタンの状態を更新
+        self.update_navigation_buttons()
     
     def save_annotations(self, silent=False):
         if not self.current_image_path or not self.canvas.polygons:
@@ -1024,3 +1058,52 @@ class AnnotationWidget(QWidget):
                     
         except Exception as e:
             QMessageBox.critical(self, "エラー", f"クラス削除エラー: {str(e)}")
+    
+    def go_to_previous_image(self):
+        """前の画像に移動"""
+        if self.current_image_index > 0:
+            self.image_list.setCurrentRow(self.current_image_index - 1)
+            item = self.image_list.item(self.current_image_index - 1)
+            if item:
+                self.on_image_selected(item)
+    
+    def go_to_next_image(self):
+        """次の画像に移動"""
+        if self.current_image_index < self.image_list.count() - 1:
+            self.image_list.setCurrentRow(self.current_image_index + 1)
+            item = self.image_list.item(self.current_image_index + 1)
+            if item:
+                self.on_image_selected(item)
+    
+    def update_navigation_buttons(self):
+        """ナビゲーションボタンの有効/無効状態を更新"""
+        count = self.image_list.count()
+        
+        # 前の画像ボタン
+        self.prev_btn.setEnabled(self.current_image_index > 0)
+        
+        # 次の画像ボタン
+        self.next_btn.setEnabled(self.current_image_index >= 0 and self.current_image_index < count - 1)
+        
+        # 現在の位置を表示（オプション）
+        if self.current_image_index >= 0 and count > 0:
+            status_text = f"画像 {self.current_image_index + 1} / {count}"
+            # ステータスバーがあれば更新
+            parent = self.parent()
+            while parent:
+                if hasattr(parent, 'status_bar'):
+                    parent.status_bar.showMessage(status_text)
+                    break
+                parent = parent.parent()
+    
+    def keyPressEvent(self, event):
+        """キーボードショートカットの処理"""
+        if event.key() == Qt.Key.Key_Left:
+            # 左矢印キー: 前の画像へ
+            self.go_to_previous_image()
+        elif event.key() == Qt.Key.Key_Right:
+            # 右矢印キー: 次の画像へ
+            self.go_to_next_image()
+        else:
+            # その他のキーはデフォルト処理
+            super().keyPressEvent(event)

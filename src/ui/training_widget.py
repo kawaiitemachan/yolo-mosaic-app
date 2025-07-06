@@ -34,6 +34,16 @@ class TrainingThread(QThread):
         super().__init__()
         self.config = config
         
+        # Mac環境でのマルチプロセッシング問題を回避
+        import platform
+        if platform.system() == 'Darwin':
+            import multiprocessing
+            # macOSでのデフォルトは'spawn'だが、'fork'の方が安定する場合がある
+            try:
+                multiprocessing.set_start_method('fork', force=True)
+            except RuntimeError:
+                pass  # 既に設定されている場合は無視
+        
     def run(self):
         try:
             from ultralytics import YOLO
@@ -45,24 +55,54 @@ class TrainingThread(QThread):
                 self.progress.emit("モデルを読み込み中...")
                 model = YOLO(self.config['model'])
                 
-                device, _ = get_device()
+                device, device_name = get_device()
                 if self.config.get('device', 'auto') != 'auto':
                     device = self.config['device']
+                    
+                # Mac環境でMPSデバイスの場合の注意喚起
+                import platform
+                if platform.system() == 'Darwin' and 'mps' in str(device):
+                    self.progress.emit("警告: Mac環境でのMPS使用は不安定な場合があります。")
+                    self.progress.emit("エラーが発生した場合は、CPUモードをお試しください。")
                 
                 self.progress.emit(f"学習を開始します (デバイス: {device})")
                 
-                results = model.train(
-                    data=self.config['data_yaml'],
-                    epochs=self.config['epochs'],
-                    imgsz=self.config['imgsz'],
-                    batch=self.config['batch_size'],
-                    patience=self.config['patience'],
-                    device=device,
-                    project=str(MODELS_DIR),
-                    name=self.config['project_name'],
-                    exist_ok=True,
-                    verbose=True
-                )
+                # Mac環境での追加設定
+                import platform
+                train_kwargs = {
+                    'data': self.config['data_yaml'],
+                    'epochs': self.config['epochs'],
+                    'imgsz': self.config['imgsz'],
+                    'batch': self.config['batch_size'],
+                    'patience': self.config['patience'],
+                    'device': device,
+                    'project': str(MODELS_DIR),
+                    'name': self.config['project_name'],
+                    'exist_ok': True,
+                    'verbose': True,
+                    'workers': 0,  # マルチプロセッシングを無効化（バスエラー対策）
+                }
+                
+                # Mac環境では追加の安全対策
+                if platform.system() == 'Darwin':
+                    train_kwargs['plots'] = False  # プロットを無効化
+                    train_kwargs['cache'] = False  # キャッシュを無効化
+                    # MPSデバイスで問題が発生した場合はCPUにフォールバック
+                    if 'mps' in str(device):
+                        try:
+                            # まずMPSで試行
+                            self.progress.emit("MPSデバイスで学習を開始します...")
+                            results = model.train(**train_kwargs)
+                        except Exception as mps_error:
+                            self.progress.emit(f"MPSエラー: {str(mps_error)}")
+                            self.progress.emit("CPUモードに切り替えて再試行します...")
+                            train_kwargs['device'] = 'cpu'
+                            results = model.train(**train_kwargs)
+                    else:
+                        results = model.train(**train_kwargs)
+                else:
+                    # Mac以外の環境
+                    results = model.train(**train_kwargs)
                 
                 self.finished.emit(True, "学習が完了しました")
                 
@@ -434,6 +474,16 @@ class TrainingWidget(QWidget):
             QMessageBox.warning(self, "警告", "学習を開始する前にデータセットを選択してください")
             return
         
+        # データセットの検証
+        validation_result = self.validate_dataset()
+        if not validation_result["valid"]:
+            QMessageBox.critical(
+                self,
+                "データセットエラー",
+                validation_result["message"]
+            )
+            return
+        
         # プロジェクト名をデータセット名から生成
         project_name = f"{self.dataset_path.name}_training"
         
@@ -462,6 +512,68 @@ class TrainingWidget(QWidget):
         self.log_text.verticalScrollBar().setValue(
             self.log_text.verticalScrollBar().maximum()
         )
+    
+    def validate_dataset(self):
+        """データセットの検証"""
+        result = {"valid": True, "message": ""}
+        
+        if not self.dataset_path or not self.dataset_path.exists():
+            result["valid"] = False
+            result["message"] = "データセットフォルダが存在しません"
+            return result
+        
+        # data.yamlの確認
+        yaml_path = self.dataset_path / "data.yaml"
+        if not yaml_path.exists():
+            result["valid"] = False
+            result["message"] = "data.yamlファイルが見つかりません"
+            return result
+        
+        try:
+            with open(yaml_path, 'r') as f:
+                data = yaml.safe_load(f)
+            
+            # 必須フィールドの確認
+            if 'names' not in data:
+                result["valid"] = False
+                result["message"] = "data.yamlにクラス名(names)が定義されていません"
+                return result
+                
+            if 'nc' not in data:
+                result["valid"] = False
+                result["message"] = "data.yamlにクラス数(nc)が定義されていません"
+                return result
+        except Exception as e:
+            result["valid"] = False
+            result["message"] = f"data.yaml読み込みエラー: {str(e)}"
+            return result
+        
+        # train/imagesフォルダの確認
+        train_images = self.dataset_path / "train" / "images"
+        if not train_images.exists():
+            result["valid"] = False
+            result["message"] = "train/imagesフォルダが見つかりません"
+            return result
+        
+        # 画像ファイルの確認
+        image_files = list(train_images.glob("*.*"))
+        if len(image_files) == 0:
+            result["valid"] = False
+            result["message"] = "train/imagesフォルダに画像がありません"
+            return result
+        
+        # 空のラベルファイルの確認（警告のみ）
+        train_labels = self.dataset_path / "train" / "labels"
+        if train_labels.exists():
+            empty_labels = 0
+            for label_file in train_labels.glob("*.txt"):
+                if label_file.stat().st_size == 0:
+                    empty_labels += 1
+            
+            if empty_labels > 0:
+                self.log(f"注意: {empty_labels}個の空のラベルファイルがあります（背景画像として扱われます）")
+        
+        return result
     
     def on_training_finished(self, success, message):
         self.start_button.setEnabled(True)
