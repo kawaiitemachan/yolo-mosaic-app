@@ -1,9 +1,11 @@
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                                QListWidget, QComboBox, QLabel, QSlider,
                                QSplitter, QFileDialog, QListWidgetItem,
-                               QMessageBox, QDialog, QInputDialog, QSizePolicy)
-from PySide6.QtCore import Qt, Signal, QPointF, QTimer
-from PySide6.QtGui import QPainter, QPen, QColor, QPolygonF, QImage, QPixmap
+                               QMessageBox, QDialog, QInputDialog, QSizePolicy,
+                               QMenu)
+from PySide6.QtCore import Qt, Signal, QPointF, QTimer, QRectF
+from PySide6.QtGui import (QPainter, QPen, QColor, QPolygonF, QImage, QPixmap,
+                          QCursor, QAction)
 
 import cv2
 import numpy as np
@@ -31,11 +33,40 @@ class ImageCanvas(QWidget):
         # サイズポリシーを設定（拡張可能）
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         
+        # 編集モード関連
+        self.selected_polygon_index = -1  # 選択されたポリゴンのインデックス
+        self.selected_point_index = -1   # 選択された点のインデックス
+        self.hovering_polygon_index = -1 # ホバー中のポリゴンのインデックス
+        self.hovering_point_index = -1   # ホバー中の点のインデックス
+        self.editing_mode = False         # 編集モード
+        self.dragging = False             # ドラッグ中かどうか
+        self.hover_start_point = False    # 最初の点にホバー中かどうか
+        
+        # アンドゥ・リドゥ用のスタック
+        self.undo_stack = []
+        self.redo_stack = []
+        
+        # マウストラッキングを有効化
+        self.setMouseTracking(True)
+        
+        # 点の検出範囲（ピクセル）
+        self.point_detection_radius = 8
+        
     def load_image(self, image_path):
         self.image = QImage(str(image_path))
         self.pixmap = QPixmap.fromImage(self.image)
         self.current_polygon = []
         self.polygons = []
+        
+        # 編集状態をリセット
+        self.selected_polygon_index = -1
+        self.selected_point_index = -1
+        self.editing_mode = False
+        self.dragging = False
+        
+        # アンドゥ/リドゥスタックをクリア
+        self.undo_stack = []
+        self.redo_stack = []
         
         # ウィジェットが表示されてから画像をフィットさせる
         if self.isVisible():
@@ -120,24 +151,56 @@ class ImageCanvas(QWidget):
         painter.translate(self.offset)
         painter.scale(self.scale, self.scale)
         
-        for polygon_data in self.polygons:
+        # 既存のポリゴンを描画
+        for idx, polygon_data in enumerate(self.polygons):
             polygon = polygon_data["points"]
             label = polygon_data["label"]
             color = QColor(colors.get(label, "#FF0000"))
             
-            pen = QPen(color, 2 / self.scale)  # スケールに応じて線の太さを調整
+            # 選択されているかホバー中かチェック
+            is_selected = idx == self.selected_polygon_index
+            is_hovering = idx == self.hovering_polygon_index
+            
+            # 線の太さと不透明度を調整
+            pen_width = 3 / self.scale if is_selected else 2 / self.scale
+            if is_hovering and not is_selected:
+                color.setAlpha(200)
+                pen_width = 2.5 / self.scale
+            
+            pen = QPen(color, pen_width)
             painter.setPen(pen)
             
+            # ポリゴンを描画
             if len(polygon) > 1:
                 for i in range(len(polygon)):
                     p1 = polygon[i]
                     p2 = polygon[(i + 1) % len(polygon)]
                     painter.drawLine(p1, p2)
+                
+                # 塗りつぶし（選択時またはホバー時）
+                if is_selected or is_hovering:
+                    fill_color = QColor(color)
+                    fill_color.setAlpha(50 if is_selected else 30)
+                    painter.setBrush(fill_color)
+                    points = [p for p in polygon]
+                    painter.drawPolygon(points)
+                    painter.setBrush(Qt.BrushStyle.NoBrush)
                     
-            for point in polygon:
+            # 頂点を描画
+            for pidx, point in enumerate(polygon):
                 painter.setBrush(color)
-                painter.drawEllipse(point, 3 / self.scale, 3 / self.scale)
+                radius = 4 / self.scale if is_selected else 3 / self.scale
+                
+                # 選択された点は大きく表示
+                if is_selected and pidx == self.selected_point_index:
+                    radius = 5 / self.scale
+                    painter.setPen(QPen(Qt.GlobalColor.white, 2 / self.scale))
+                    painter.drawEllipse(point, radius, radius)
+                    painter.setPen(pen)
+                else:
+                    painter.drawEllipse(point, radius, radius)
         
+        # 作成中のポリゴンを描画
         if self.current_polygon:
             color = QColor(colors.get(self.current_label, "#FF0000"))
             pen = QPen(color, 2 / self.scale)
@@ -147,33 +210,148 @@ class ImageCanvas(QWidget):
             if len(self.current_polygon) > 1:
                 for i in range(len(self.current_polygon) - 1):
                     painter.drawLine(self.current_polygon[i], self.current_polygon[i + 1])
+                
+                # 最初の点に戻る線をプレビュー（3点以上の場合）
+                if len(self.current_polygon) >= 3 and self.hover_start_point:
+                    painter.drawLine(self.current_polygon[-1], self.current_polygon[0])
             
-            for point in self.current_polygon:
+            # 頂点を描画
+            for idx, point in enumerate(self.current_polygon):
                 painter.setBrush(color)
-                painter.drawEllipse(point, 3 / self.scale, 3 / self.scale)
+                radius = 3 / self.scale
+                
+                # 最初の点は特別に表示（ホバー時はさらに大きく）
+                if idx == 0:
+                    if self.hover_start_point and len(self.current_polygon) >= 3:
+                        radius = 5 / self.scale
+                        painter.setPen(QPen(Qt.GlobalColor.white, 2 / self.scale))
+                        painter.drawEllipse(point, radius, radius)
+                        painter.setPen(pen)
+                    else:
+                        painter.setPen(QPen(color, 3 / self.scale))
+                        painter.drawEllipse(point, radius + 1 / self.scale, radius + 1 / self.scale)
+                        painter.setPen(pen)
+                        painter.drawEllipse(point, radius, radius)
+                else:
+                    painter.drawEllipse(point, radius, radius)
         
         painter.restore()
     
     def mousePressEvent(self, event):
-        if not self.pixmap or event.button() != Qt.MouseButton.LeftButton:
+        if not self.pixmap:
             return
             
         pos = (event.position() - self.offset) / self.scale
         
-        if 0 <= pos.x() <= self.pixmap.width() and 0 <= pos.y() <= self.pixmap.height():
-            self.current_polygon.append(pos)
+        # 画像の範囲内かチェック
+        if not (0 <= pos.x() <= self.pixmap.width() and 0 <= pos.y() <= self.pixmap.height()):
+            return
+        
+        # 左クリック
+        if event.button() == Qt.MouseButton.LeftButton:
+            # 既存のポリゴンの点をクリックしたかチェック
+            clicked_polygon, clicked_point = self.find_point_at_position(pos)
+            
+            if clicked_polygon >= 0:
+                # 既存のポリゴンを選択
+                self.selected_polygon_index = clicked_polygon
+                self.selected_point_index = clicked_point
+                self.editing_mode = True
+                self.dragging = True
+                self.current_polygon = []  # 作成中のポリゴンをクリア
+                self.update()
+                return
+            
+            # 新規ポリゴン作成
+            if not self.editing_mode:
+                # 最初の点をクリックした場合（ポリゴンを閉じる）
+                if len(self.current_polygon) >= 3 and self.is_near_point(pos, self.current_polygon[0]):
+                    self.complete_polygon()
+                else:
+                    # 新しい点を追加
+                    self.current_polygon.append(pos)
+                    self.save_state()  # アンドゥ用に状態を保存
+                    self.update()
+            else:
+                # 編集モードを終了
+                self.selected_polygon_index = -1
+                self.selected_point_index = -1
+                self.editing_mode = False
+                self.update()
+        
+        # 右クリック
+        elif event.button() == Qt.MouseButton.RightButton:
+            # コンテキストメニューを表示
+            self.show_context_menu(event.globalPosition().toPoint())
+    
+    def mouseMoveEvent(self, event):
+        if not self.pixmap:
+            return
+            
+        pos = (event.position() - self.offset) / self.scale
+        
+        # ドラッグ中の場合
+        if self.dragging and self.selected_polygon_index >= 0 and self.selected_point_index >= 0:
+            if 0 <= pos.x() <= self.pixmap.width() and 0 <= pos.y() <= self.pixmap.height():
+                # 選択された点を移動
+                self.polygons[self.selected_polygon_index]["points"][self.selected_point_index] = pos
+                self.update()
+                return
+        
+        # ホバー処理
+        # 既存のポリゴンのホバーチェック
+        old_hovering = self.hovering_polygon_index
+        self.hovering_polygon_index, self.hovering_point_index = self.find_point_at_position(pos)
+        
+        # ポリゴンがない場合はポリゴン全体をチェック
+        if self.hovering_polygon_index < 0:
+            self.hovering_polygon_index = self.find_polygon_at_position(pos)
+        
+        # 最初の点へのホバーチェック（ポリゴン作成中）
+        old_hover_start = self.hover_start_point
+        if len(self.current_polygon) >= 3:
+            self.hover_start_point = self.is_near_point(pos, self.current_polygon[0])
+        else:
+            self.hover_start_point = False
+        
+        # カーソルを変更
+        if self.hovering_polygon_index >= 0 or self.hover_start_point:
+            self.setCursor(Qt.CursorShape.PointingHandCursor)
+        else:
+            self.setCursor(Qt.CursorShape.CrossCursor)
+        
+        # ホバー状態が変わった場合のみ再描画
+        if old_hovering != self.hovering_polygon_index or old_hover_start != self.hover_start_point:
             self.update()
     
-    def mouseDoubleClickEvent(self, event):
-        if len(self.current_polygon) >= 3:
-            self.complete_polygon()
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            if self.dragging:
+                self.dragging = False
+                self.save_state()  # 編集後の状態を保存
     
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_Return and len(self.current_polygon) >= 3:
             self.complete_polygon()
         elif event.key() == Qt.Key.Key_Escape:
-            self.current_polygon = []
-            self.update()
+            if self.current_polygon:
+                self.current_polygon = []
+                self.update()
+            elif self.editing_mode:
+                self.selected_polygon_index = -1
+                self.selected_point_index = -1
+                self.editing_mode = False
+                self.update()
+        elif event.key() == Qt.Key.Key_Delete or event.key() == Qt.Key.Key_Backspace:
+            # 選択されたポリゴンを削除
+            if self.selected_polygon_index >= 0:
+                self.delete_selected_polygon()
+        elif event.key() == Qt.Key.Key_Z and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            # アンドゥ
+            self.undo()
+        elif event.key() == Qt.Key.Key_Y and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            # リドゥ
+            self.redo()
     
     def complete_polygon(self):
         if len(self.current_polygon) >= 3:
@@ -257,6 +435,184 @@ class ImageCanvas(QWidget):
     def undo_last_polygon(self):
         if self.polygons:
             self.polygons.pop()
+            self.update()
+    
+    def find_point_at_position(self, pos):
+        """指定位置にある点を検索して、ポリゴンインデックスと点インデックスを返す"""
+        for poly_idx, polygon_data in enumerate(self.polygons):
+            for point_idx, point in enumerate(polygon_data["points"]):
+                if self.is_near_point(pos, point):
+                    return poly_idx, point_idx
+        return -1, -1
+    
+    def find_polygon_at_position(self, pos):
+        """指定位置にあるポリゴンを検索"""
+        for idx, polygon_data in enumerate(self.polygons):
+            if self.point_in_polygon(pos, polygon_data["points"]):
+                return idx
+        return -1
+    
+    def is_near_point(self, pos1, pos2):
+        """2つの点が近いかどうかを判定"""
+        distance = ((pos1.x() - pos2.x()) ** 2 + (pos1.y() - pos2.y()) ** 2) ** 0.5
+        return distance <= self.point_detection_radius / self.scale
+    
+    def point_in_polygon(self, point, polygon):
+        """点がポリゴン内にあるかどうかを判定（レイキャスティング法）"""
+        if len(polygon) < 3:
+            return False
+        
+        x, y = point.x(), point.y()
+        n = len(polygon)
+        inside = False
+        
+        p1x, p1y = polygon[0].x(), polygon[0].y()
+        for i in range(1, n + 1):
+            p2x, p2y = polygon[i % n].x(), polygon[i % n].y()
+            if y > min(p1y, p2y):
+                if y <= max(p1y, p2y):
+                    if x <= max(p1x, p2x):
+                        if p1y != p2y:
+                            xinters = (y - p1y) * (p2x - p1x) / (p2y - p1y) + p1x
+                        if p1x == p2x or x <= xinters:
+                            inside = not inside
+            p1x, p1y = p2x, p2y
+        
+        return inside
+    
+    def show_context_menu(self, global_pos):
+        """コンテキストメニューを表示"""
+        menu = QMenu(self)
+        
+        # 現在のマウス位置を画像座標に変換
+        local_pos = self.mapFromGlobal(global_pos)
+        pos = (QPointF(local_pos) - self.offset) / self.scale
+        
+        # ポリゴンまたは点を右クリックした場合
+        poly_idx, point_idx = self.find_point_at_position(pos)
+        if poly_idx < 0:
+            poly_idx = self.find_polygon_at_position(pos)
+        
+        if poly_idx >= 0:
+            delete_action = menu.addAction("ポリゴンを削除")
+            delete_action.triggered.connect(lambda: self.delete_polygon(poly_idx))
+            
+            menu.addSeparator()
+            
+            # ラベル変更サブメニュー
+            label_menu = menu.addMenu("ラベルを変更")
+            for label in self.class_colors.keys():
+                if label != self.polygons[poly_idx]["label"]:
+                    action = label_menu.addAction(label)
+                    action.triggered.connect(lambda checked, l=label, idx=poly_idx: self.change_polygon_label(idx, l))
+        
+        # 一般的なアクション
+        if menu.actions():
+            menu.addSeparator()
+        
+        if len(self.current_polygon) >= 3:
+            complete_action = menu.addAction("ポリゴンを確定")
+            complete_action.triggered.connect(self.complete_polygon)
+        
+        if self.current_polygon:
+            cancel_action = menu.addAction("作成をキャンセル")
+            cancel_action.triggered.connect(lambda: self.cancel_current_polygon())
+        
+        if self.undo_stack:
+            undo_action = menu.addAction("元に戻す (Ctrl+Z)")
+            undo_action.triggered.connect(self.undo)
+        
+        if self.redo_stack:
+            redo_action = menu.addAction("やり直す (Ctrl+Y)")
+            redo_action.triggered.connect(self.redo)
+        
+        if menu.actions():
+            menu.exec(global_pos)
+    
+    def delete_polygon(self, index):
+        """指定インデックスのポリゴンを削除"""
+        if 0 <= index < len(self.polygons):
+            self.save_state()
+            self.polygons.pop(index)
+            self.selected_polygon_index = -1
+            self.selected_point_index = -1
+            self.editing_mode = False
+            self.update()
+    
+    def delete_selected_polygon(self):
+        """選択されたポリゴンを削除"""
+        if self.selected_polygon_index >= 0:
+            self.delete_polygon(self.selected_polygon_index)
+    
+    def change_polygon_label(self, index, new_label):
+        """ポリゴンのラベルを変更"""
+        if 0 <= index < len(self.polygons):
+            self.save_state()
+            self.polygons[index]["label"] = new_label
+            self.update()
+    
+    def cancel_current_polygon(self):
+        """現在作成中のポリゴンをキャンセル"""
+        self.current_polygon = []
+        self.update()
+    
+    def save_state(self):
+        """現在の状態をアンドゥスタックに保存"""
+        # 現在のポリゴンの深いコピーを作成
+        state = {
+            "polygons": [{
+                "points": [QPointF(p) for p in poly["points"]],
+                "label": poly["label"]
+            } for poly in self.polygons],
+            "current_polygon": [QPointF(p) for p in self.current_polygon]
+        }
+        self.undo_stack.append(state)
+        
+        # アンドゥスタックが大きくなりすぎないように制限
+        if len(self.undo_stack) > 50:
+            self.undo_stack.pop(0)
+        
+        # 新しい操作が行われたらリドゥスタックをクリア
+        self.redo_stack.clear()
+    
+    def undo(self):
+        """元に戻す"""
+        if len(self.undo_stack) > 1:
+            # 現在の状態をリドゥスタックに保存
+            current_state = self.undo_stack.pop()
+            self.redo_stack.append(current_state)
+            
+            # 前の状態を復元
+            prev_state = self.undo_stack[-1]
+            self.polygons = [{
+                "points": [QPointF(p) for p in poly["points"]],
+                "label": poly["label"]
+            } for poly in prev_state["polygons"]]
+            self.current_polygon = [QPointF(p) for p in prev_state["current_polygon"]]
+            
+            self.selected_polygon_index = -1
+            self.selected_point_index = -1
+            self.editing_mode = False
+            self.update()
+    
+    def redo(self):
+        """やり直す"""
+        if self.redo_stack:
+            # 現在の状態をアンドゥスタックに保存
+            self.save_state()
+            self.undo_stack.pop()  # save_stateで追加された重複を削除
+            
+            # リドゥスタックから状態を復元
+            state = self.redo_stack.pop()
+            self.polygons = [{
+                "points": [QPointF(p) for p in poly["points"]],
+                "label": poly["label"]
+            } for poly in state["polygons"]]
+            self.current_polygon = [QPointF(p) for p in state["current_polygon"]]
+            
+            self.selected_polygon_index = -1
+            self.selected_point_index = -1
+            self.editing_mode = False
             self.update()
 
 class AnnotationWidget(QWidget):
@@ -343,8 +699,22 @@ class AnnotationWidget(QWidget):
         layout.addWidget(save_btn)
         
         layout.addWidget(QLabel("操作方法:"))
-        help_text = QLabel("左クリック: 点を追加\nダブルクリック/Enter: ポリゴン確定\nEsc: 現在のポリゴンをキャンセル")
+        help_text = QLabel(
+            "【ポリゴン作成】\n"
+            "• 左クリック: 点を追加\n"
+            "• 最初の点をクリック/Enter: 確定\n"
+            "• Esc: 作成をキャンセル\n\n"
+            "【ポリゴン編集】\n"
+            "• 既存の点をドラッグ: 移動\n"
+            "• ポリゴンをクリック: 選択\n"
+            "• Delete/Backspace: 削除\n"
+            "• 右クリック: メニュー表示\n\n"
+            "【その他】\n"
+            "• Ctrl+Z: 元に戻す\n"
+            "• Ctrl+Y: やり直す"
+        )
         help_text.setWordWrap(True)
+        help_text.setStyleSheet("QLabel { background-color: #f0f0f0; padding: 5px; border-radius: 3px; }")
         layout.addWidget(help_text)
         
         layout.addStretch()
@@ -503,10 +873,13 @@ class AnnotationWidget(QWidget):
                 self.canvas.pixmap.height()
             )
             self.canvas.polygons = polygons
+            # 初期状態をアンドゥスタックに保存
+            self.canvas.save_state()
             self.canvas.update()
         except:
             # アノテーションファイルが存在しない場合は無視
-            pass
+            # 空の状態を初期状態として保存
+            self.canvas.save_state()
     
     def update_data_yaml(self):
         """data.yamlのクラス情報を更新"""
