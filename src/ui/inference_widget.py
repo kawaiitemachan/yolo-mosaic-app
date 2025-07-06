@@ -2,7 +2,7 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                                QLabel, QSlider, QComboBox, QListWidget,
                                QSplitter, QFileDialog, QListWidgetItem,
                                QGroupBox, QDoubleSpinBox, QCheckBox, QSpinBox,
-                               QLineEdit, QMessageBox)
+                               QLineEdit, QMessageBox, QProgressBar)
 from PySide6.QtCore import Qt, QThread, Signal, QSettings
 from PySide6.QtGui import QImage, QPixmap, QPainter
 import cv2
@@ -15,6 +15,7 @@ from ..utils.device_utils import get_device
 class InferenceThread(QThread):
     result_ready = Signal(np.ndarray, list, str)  # 画像パスを追加
     progress = Signal(str)
+    progress_update = Signal(int, int, str)  # 現在の番号, 総数, ファイル名
     error = Signal(str)
     
     def __init__(self, model_path, image_paths, confidence, iou, blur_type, strength, output_dir=None):
@@ -39,7 +40,9 @@ class InferenceThread(QThread):
             
             total_images = len(self.image_paths)
             for idx, image_path in enumerate(self.image_paths):
-                self.progress.emit(f"処理中 ({idx + 1}/{total_images}): {Path(image_path).name}")
+                file_name = Path(image_path).name
+                self.progress.emit(f"処理中 ({idx + 1}/{total_images}): {file_name}")
+                self.progress_update.emit(idx + 1, total_images, file_name)
                 
                 # 推論実行
                 results = model(
@@ -160,6 +163,7 @@ class InferenceWidget(QWidget):
         self.folder_mode = False
         self.folder_path = None
         self.image_files = []
+        self.processed_image = None
         self.load_settings()
         
     def init_ui(self):
@@ -190,13 +194,13 @@ class InferenceWidget(QWidget):
         mosaic_group = self.create_mosaic_group()
         layout.addWidget(mosaic_group)
         
-        load_image_btn = QPushButton("画像を選択")
-        load_image_btn.clicked.connect(self.load_image)
-        layout.addWidget(load_image_btn)
+        self.load_image_btn = QPushButton("画像を選択")
+        self.load_image_btn.clicked.connect(self.load_image)
+        layout.addWidget(self.load_image_btn)
         
-        load_folder_btn = QPushButton("フォルダを選択")
-        load_folder_btn.clicked.connect(self.load_folder)
-        layout.addWidget(load_folder_btn)
+        self.load_folder_btn = QPushButton("フォルダを選択")
+        self.load_folder_btn.clicked.connect(self.load_folder)
+        layout.addWidget(self.load_folder_btn)
         
         self.file_list = QListWidget()
         self.file_list.itemClicked.connect(self.on_file_selected)
@@ -212,12 +216,31 @@ class InferenceWidget(QWidget):
         self.output_path_edit.setReadOnly(True)
         path_layout.addWidget(self.output_path_edit)
         
-        browse_output_btn = QPushButton("参照...")
-        browse_output_btn.clicked.connect(self.browse_output_folder)
-        path_layout.addWidget(browse_output_btn)
+        self.browse_output_btn = QPushButton("参照...")
+        self.browse_output_btn.clicked.connect(self.browse_output_folder)
+        path_layout.addWidget(self.browse_output_btn)
         
         output_layout.addLayout(path_layout)
         layout.addWidget(output_group)
+        
+        # 進捗表示
+        progress_group = QGroupBox("処理状況")
+        progress_layout = QVBoxLayout(progress_group)
+        
+        self.progress_label = QLabel("待機中...")
+        self.progress_label.setWordWrap(True)
+        progress_layout.addWidget(self.progress_label)
+        
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        progress_layout.addWidget(self.progress_bar)
+        
+        self.status_label = QLabel("")
+        self.status_label.setStyleSheet("QLabel { color: #666; font-size: 12px; }")
+        progress_layout.addWidget(self.status_label)
+        
+        layout.addWidget(progress_group)
         
         self.inference_btn = QPushButton("推論実行")
         self.inference_btn.clicked.connect(self.run_inference)
@@ -496,9 +519,15 @@ class InferenceWidget(QWidget):
         # 共通のシグナル接続
         self.inference_thread.result_ready.connect(self.on_inference_complete)
         self.inference_thread.progress.connect(self.on_inference_progress)
+        self.inference_thread.progress_update.connect(self.on_progress_update)
         self.inference_thread.error.connect(self.on_inference_error)
         self.inference_thread.finished.connect(self.on_inference_finished)
         self.inference_thread.start()
+        
+        # UI制御
+        self.set_ui_enabled(False)
+        self.progress_bar.setValue(0)
+        self.progress_label.setText("処理を開始しています...")
         print("Inference thread started")
     
     def on_inference_complete(self, image, detections, image_path):
@@ -550,7 +579,9 @@ class InferenceWidget(QWidget):
     def on_inference_finished(self):
         """推論スレッドが終了したときの処理"""
         print("推論スレッド終了")
-        self.inference_btn.setEnabled(True)
+        self.set_ui_enabled(True)
+        self.progress_label.setText("処理完了")
+        self.progress_bar.setValue(100)
         
         if self.folder_mode:
             from PySide6.QtWidgets import QMessageBox
@@ -560,13 +591,33 @@ class InferenceWidget(QWidget):
     def on_inference_progress(self, message):
         """推論の進捗メッセージを処理"""
         print(f"推論進捗: {message}")
+        self.status_label.setText(message)
+    
+    def on_progress_update(self, current, total, filename):
+        """進捗バーの更新"""
+        progress = int((current / total) * 100) if total > 0 else 0
+        self.progress_bar.setValue(progress)
+        self.progress_label.setText(f"処理中: {filename} ({current}/{total})")
     
     def on_inference_error(self, error_message):
         """推論エラーを処理"""
         print(f"推論エラー: {error_message}")
         from PySide6.QtWidgets import QMessageBox
         QMessageBox.critical(self, "推論エラー", error_message)
-        self.inference_btn.setEnabled(True)
+        self.set_ui_enabled(True)
+        self.progress_label.setText("エラーが発生しました")
+        self.status_label.setText(error_message)
+    
+    def set_ui_enabled(self, enabled):
+        """処理中のUI制御"""
+        self.inference_btn.setEnabled(enabled)
+        self.model_combo.setEnabled(enabled)
+        self.load_image_btn.setEnabled(enabled)
+        self.load_folder_btn.setEnabled(enabled)
+        self.browse_output_btn.setEnabled(enabled)
+        self.file_list.setEnabled(enabled)
+        self.apply_mosaic_btn.setEnabled(enabled and bool(self.current_detections))
+        self.save_btn.setEnabled(enabled and hasattr(self, 'processed_image') and self.processed_image is not None)
     
     def on_blur_strength_changed(self, value):
         """ブラー強度スライダーの値が変更されたとき"""
