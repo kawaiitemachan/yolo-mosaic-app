@@ -1,8 +1,8 @@
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                                QListWidget, QComboBox, QLabel, QSlider,
                                QSplitter, QFileDialog, QListWidgetItem,
-                               QMessageBox, QDialog, QInputDialog)
-from PySide6.QtCore import Qt, Signal, QPointF
+                               QMessageBox, QDialog, QInputDialog, QSizePolicy)
+from PySide6.QtCore import Qt, Signal, QPointF, QTimer
 from PySide6.QtGui import QPainter, QPen, QColor, QPolygonF, QImage, QPixmap
 
 import cv2
@@ -26,42 +26,88 @@ class ImageCanvas(QWidget):
         self.scale = 1.0
         self.offset = QPointF(0, 0)
         self.class_colors = {}  # クラスごとの色を動的に管理
+        self.setMinimumSize(400, 300)  # 最小サイズを設定
+        
+        # サイズポリシーを設定（拡張可能）
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         
     def load_image(self, image_path):
         self.image = QImage(str(image_path))
         self.pixmap = QPixmap.fromImage(self.image)
-        self.fit_image_to_widget()
         self.current_polygon = []
         self.polygons = []
+        
+        # ウィジェットが表示されてから画像をフィットさせる
+        if self.isVisible():
+            self.fit_image_to_widget()
+        else:
+            # ウィジェットがまだ表示されていない場合は遅延実行
+            QTimer.singleShot(0, self.fit_image_to_widget)
+        
         self.update()
         
     def fit_image_to_widget(self):
-        if self.pixmap:
-            widget_size = self.size()
-            image_size = self.pixmap.size()
-            
-            scale_x = widget_size.width() / image_size.width()
-            scale_y = widget_size.height() / image_size.height()
-            self.scale = min(scale_x, scale_y, 1.0)
-            
-            scaled_width = image_size.width() * self.scale
-            scaled_height = image_size.height() * self.scale
-            
-            self.offset = QPointF(
-                (widget_size.width() - scaled_width) / 2,
-                (widget_size.height() - scaled_height) / 2
-            )
-    
-    def paintEvent(self, event):
-        if not self.pixmap:
+        if not self.pixmap or self.pixmap.width() <= 0 or self.pixmap.height() <= 0:
             return
             
+        widget_size = self.size()
+        if widget_size.width() <= 0 or widget_size.height() <= 0:
+            return
+            
+        image_width = float(self.pixmap.width())
+        image_height = float(self.pixmap.height())
+        widget_width = float(widget_size.width())
+        widget_height = float(widget_size.height())
+        
+        # 画像の縦横比を計算
+        image_aspect_ratio = image_width / image_height
+        
+        # ウィジェットに収まるようにスケールを計算（縦横比を保持）
+        if (widget_width / widget_height) > image_aspect_ratio:
+            # ウィジェットの方が横長の場合、高さに合わせる
+            self.scale = widget_height / image_height
+        else:
+            # ウィジェットの方が縦長の場合、幅に合わせる
+            self.scale = widget_width / image_width
+        
+        # スケール後のサイズを計算
+        scaled_width = image_width * self.scale
+        scaled_height = image_height * self.scale
+        
+        # 中央に配置するためのオフセットを計算
+        self.offset = QPointF(
+            (widget_width - scaled_width) / 2.0,
+            (widget_height - scaled_height) / 2.0
+        )
+    
+    def resizeEvent(self, event):
+        """ウィジェットのサイズが変更されたときに画像を再フィット"""
+        super().resizeEvent(event)
+        self.fit_image_to_widget()
+        self.update()
+    
+    def showEvent(self, event):
+        """ウィジェットが表示されたときに画像を再フィット"""
+        super().showEvent(event)
+        self.fit_image_to_widget()
+        self.update()
+    
+    def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         
+        # 背景を描画（画像の周りを暗くする）
+        painter.fillRect(self.rect(), QColor(50, 50, 50))
+        
+        if not self.pixmap:
+            return
+        
+        # 画像を描画
+        painter.save()
         painter.translate(self.offset)
         painter.scale(self.scale, self.scale)
         painter.drawPixmap(0, 0, self.pixmap)
+        painter.restore()
         
         # クラス色が設定されていない場合はデフォルトを使用
         if not self.class_colors:
@@ -69,12 +115,17 @@ class ImageCanvas(QWidget):
         else:
             colors = self.class_colors
         
+        # ポリゴンを描画（画像と同じ変換を適用）
+        painter.save()
+        painter.translate(self.offset)
+        painter.scale(self.scale, self.scale)
+        
         for polygon_data in self.polygons:
             polygon = polygon_data["points"]
             label = polygon_data["label"]
             color = QColor(colors.get(label, "#FF0000"))
             
-            pen = QPen(color, 2)
+            pen = QPen(color, 2 / self.scale)  # スケールに応じて線の太さを調整
             painter.setPen(pen)
             
             if len(polygon) > 1:
@@ -85,11 +136,11 @@ class ImageCanvas(QWidget):
                     
             for point in polygon:
                 painter.setBrush(color)
-                painter.drawEllipse(point, 3, 3)
+                painter.drawEllipse(point, 3 / self.scale, 3 / self.scale)
         
         if self.current_polygon:
             color = QColor(colors.get(self.current_label, "#FF0000"))
-            pen = QPen(color, 2)
+            pen = QPen(color, 2 / self.scale)
             pen.setStyle(Qt.PenStyle.DashLine)
             painter.setPen(pen)
             
@@ -99,7 +150,9 @@ class ImageCanvas(QWidget):
             
             for point in self.current_polygon:
                 painter.setBrush(color)
-                painter.drawEllipse(point, 3, 3)
+                painter.drawEllipse(point, 3 / self.scale, 3 / self.scale)
+        
+        painter.restore()
     
     def mousePressEvent(self, event):
         if not self.pixmap or event.button() != Qt.MouseButton.LeftButton:
