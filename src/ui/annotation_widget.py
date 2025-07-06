@@ -2,7 +2,7 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                                QListWidget, QComboBox, QLabel, QSlider,
                                QSplitter, QFileDialog, QListWidgetItem,
                                QMessageBox, QDialog, QInputDialog, QSizePolicy,
-                               QMenu)
+                               QMenu, QDialogButtonBox, QLineEdit)
 from PySide6.QtCore import Qt, Signal, QPointF, QTimer, QRectF
 from PySide6.QtGui import (QPainter, QPen, QColor, QPolygonF, QImage, QPixmap,
                           QCursor, QAction)
@@ -271,6 +271,16 @@ class ImageCanvas(QWidget):
                 if len(self.current_polygon) >= 3 and self.is_near_point(pos, self.current_polygon[0]):
                     self.complete_polygon()
                 else:
+                    # ラベルが選択されているかチェック
+                    if not self.current_label or self.current_label == "":
+                        # ラベルがない場合、親ウィジェットに通知
+                        parent = self.parent()
+                        while parent and not hasattr(parent, 'check_and_add_label'):
+                            parent = parent.parent()
+                        if parent and hasattr(parent, 'check_and_add_label'):
+                            if not parent.check_and_add_label():
+                                return  # ラベルが追加されなかった場合は処理を中止
+                    
                     # 新しい点を追加
                     self.current_polygon.append(pos)
                     self.save_state()  # アンドゥ用に状態を保存
@@ -809,7 +819,11 @@ class AnnotationWidget(QWidget):
                     with open(yaml_path, 'r') as f:
                         data = yaml.safe_load(f)
                     classes = data.get('names', [])
-                    info_text += f"クラス: {', '.join(classes)}"
+                    
+                    if classes:
+                        info_text += f"クラス: {', '.join(classes)}"
+                    else:
+                        info_text += "クラス: なし（アノテーション開始時に追加されます）"
                     
                     # ラベルコンボボックスを更新
                     self.update_label_combo(classes)
@@ -956,6 +970,9 @@ class AnnotationWidget(QWidget):
             elif classes:
                 self.label_combo.setCurrentIndex(0)
                 self.canvas.set_label(classes[0])
+        else:
+            # ラベルがない場合、Canvasにも空のラベルを設定
+            self.canvas.set_label("")
     
     def add_class(self):
         """クラスを追加"""
@@ -1107,3 +1124,97 @@ class AnnotationWidget(QWidget):
         else:
             # その他のキーはデフォルト処理
             super().keyPressEvent(event)
+    
+    def check_and_add_label(self):
+        """ラベルが存在しない場合、ユーザーに追加を促す"""
+        if self.label_combo.count() == 0:
+            # ラベルがない場合、ダイアログを表示
+            dialog = QDialog(self)
+            dialog.setWindowTitle("ラベルの追加")
+            dialog.setModal(True)
+            dialog.resize(400, 200)
+            
+            layout = QVBoxLayout(dialog)
+            
+            # メッセージ
+            message = QLabel(
+                "アノテーションを開始するにはラベルが必要です。\n"
+                "新しいラベルを追加してください。"
+            )
+            message.setWordWrap(True)
+            layout.addWidget(message)
+            
+            # ラベル入力フィールド
+            input_layout = QHBoxLayout()
+            input_layout.addWidget(QLabel("ラベル名:"))
+            label_input = QLineEdit()
+            label_input.setPlaceholderText("例: person, car, object など")
+            input_layout.addWidget(label_input)
+            layout.addLayout(input_layout)
+            
+            # ボタン
+            button_box = QDialogButtonBox(
+                QDialogButtonBox.StandardButton.Ok | 
+                QDialogButtonBox.StandardButton.Cancel
+            )
+            button_box.accepted.connect(dialog.accept)
+            button_box.rejected.connect(dialog.reject)
+            layout.addWidget(button_box)
+            
+            # ダイアログを表示
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                new_label = label_input.text().strip()
+                if new_label:
+                    # ラベルを追加
+                    self.add_class_with_name(new_label)
+                    return True
+                else:
+                    QMessageBox.warning(
+                        self,
+                        "警告",
+                        "ラベル名を入力してください。"
+                    )
+                    return False
+            else:
+                return False
+        
+        return True  # ラベルが既に存在する場合
+    
+    def add_class_with_name(self, class_name):
+        """指定された名前でクラスを追加"""
+        if not self.dataset_path:
+            return
+            
+        yaml_path = self.dataset_path / "data.yaml"
+        
+        try:
+            # data.yamlを読み込む
+            with open(yaml_path, 'r') as f:
+                data = yaml.safe_load(f)
+            
+            classes = data.get('names', [])
+            
+            # 既に存在する場合はスキップ
+            if class_name in classes:
+                return
+                
+            # クラスを追加
+            classes.append(class_name)
+            data['names'] = classes
+            data['nc'] = len(classes)
+            
+            # 保存
+            with open(yaml_path, 'w') as f:
+                yaml.dump(data, f, default_flow_style=False, allow_unicode=True)
+            
+            # UI更新
+            self.update_dataset_info()
+            self.notify_auto_save()
+            
+            # 新しく追加したラベルを選択
+            index = self.label_combo.findText(class_name)
+            if index >= 0:
+                self.label_combo.setCurrentIndex(index)
+            
+        except Exception as e:
+            QMessageBox.critical(self, "エラー", f"クラス追加エラー: {str(e)}")
