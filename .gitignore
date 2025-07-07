@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# PyQt/Qt
+*.ui.autosave
+*.qm
+.qt_for_python/
+
+# YOLO model files
+*.pt
+*.pth
+*.onnx
+*.engine
+*.torchscript
+
+# Dataset files
+datasets/
+runs/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
