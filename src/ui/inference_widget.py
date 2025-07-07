@@ -2,7 +2,7 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                                QLabel, QSlider, QComboBox, QListWidget,
                                QSplitter, QFileDialog, QListWidgetItem,
                                QGroupBox, QDoubleSpinBox, QCheckBox, QSpinBox,
-                               QLineEdit, QMessageBox, QProgressBar)
+                               QLineEdit, QMessageBox, QProgressBar, QScrollArea)
 from PySide6.QtCore import Qt, QThread, Signal, QSettings
 from PySide6.QtGui import QImage, QPixmap, QPainter
 import cv2
@@ -18,7 +18,7 @@ class InferenceThread(QThread):
     progress_update = Signal(int, int, str)  # 現在の番号, 総数, ファイル名
     error = Signal(str)
     
-    def __init__(self, model_path, image_paths, confidence, iou, blur_type, strength, output_dir=None, mask_expansion=2):
+    def __init__(self, model_path, image_paths, confidence, iou, blur_type, strength, output_dir=None, mask_expansion=2, selected_classes=None):
         super().__init__()
         self.model_path = model_path
         self.image_paths = image_paths if isinstance(image_paths, list) else [image_paths]
@@ -28,6 +28,7 @@ class InferenceThread(QThread):
         self.strength = strength
         self.output_dir = output_dir
         self.mask_expansion = mask_expansion
+        self.selected_classes = selected_classes if selected_classes is not None else set()
         
     def run(self):
         try:
@@ -66,10 +67,15 @@ class InferenceThread(QThread):
                 for r in results:
                     if r.masks is not None:
                         for i, mask in enumerate(r.masks.data):
+                            cls = int(r.boxes.cls[i])
+                            
+                            # 選択されたクラスのみを処理（選択されていない場合は全クラスを処理）
+                            if self.selected_classes and cls not in self.selected_classes:
+                                continue
+                            
                             mask_np = mask.cpu().numpy()
                             mask_resized = cv2.resize(mask_np, (image.shape[1], image.shape[0]))
                             
-                            cls = int(r.boxes.cls[i])
                             conf = float(r.boxes.conf[i])
                             label = model.names[cls]
                             
@@ -166,6 +172,9 @@ class InferenceWidget(QWidget):
         self.folder_path = None
         self.image_files = []
         self.processed_image = None
+        self.class_checkboxes = {}  # クラス名とチェックボックスの対応
+        self.model_classes = {}  # モデルのクラス情報
+        self.selected_classes = set()  # 選択されたクラスID
         self.load_settings()
         
     def init_ui(self):
@@ -192,6 +201,10 @@ class InferenceWidget(QWidget):
         
         param_group = self.create_param_group()
         layout.addWidget(param_group)
+        
+        # クラス選択グループを追加
+        self.class_group = self.create_class_selection_group()
+        layout.addWidget(self.class_group)
         
         mosaic_group = self.create_mosaic_group()
         layout.addWidget(mosaic_group)
@@ -277,6 +290,7 @@ class InferenceWidget(QWidget):
         layout = QVBoxLayout(group)
         
         self.model_combo = QComboBox()
+        self.model_combo.currentIndexChanged.connect(self.on_model_changed)
         self.refresh_models()
         layout.addWidget(self.model_combo)
         
@@ -363,6 +377,111 @@ class InferenceWidget(QWidget):
         
         return group
     
+    def create_class_selection_group(self):
+        """クラス選択用のグループボックスを作成"""
+        group = QGroupBox("処理対象クラス")
+        layout = QVBoxLayout(group)
+        
+        # スクロールエリアを作成（クラスが多い場合のため）
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setMaximumHeight(200)
+        
+        # スクロールエリア内のウィジェット
+        self.class_widget = QWidget()
+        self.class_layout = QVBoxLayout(self.class_widget)
+        
+        # 全選択/全解除ボタン
+        button_layout = QHBoxLayout()
+        self.select_all_btn = QPushButton("全選択")
+        self.select_all_btn.clicked.connect(self.select_all_classes)
+        self.deselect_all_btn = QPushButton("全解除")
+        self.deselect_all_btn.clicked.connect(self.deselect_all_classes)
+        button_layout.addWidget(self.select_all_btn)
+        button_layout.addWidget(self.deselect_all_btn)
+        layout.addLayout(button_layout)
+        
+        # 初期状態では「モデルを選択してください」と表示
+        self.no_model_label = QLabel("モデルを選択してください")
+        self.class_layout.addWidget(self.no_model_label)
+        
+        scroll.setWidget(self.class_widget)
+        layout.addWidget(scroll)
+        
+        return group
+    
+    def on_model_changed(self, index):
+        """モデルが変更されたときの処理"""
+        if index < 0:
+            return
+            
+        model_path = self.model_combo.currentData()
+        if not model_path:
+            return
+            
+        # モデルからクラス情報を取得
+        self.load_model_classes(model_path)
+        
+        # クラス選択UIを更新
+        self.update_class_selection_ui()
+        
+        # 設定を保存
+        self.save_settings()
+    
+    def load_model_classes(self, model_path):
+        """モデルからクラス情報を取得"""
+        try:
+            from ultralytics import YOLO
+            model = YOLO(model_path)
+            self.model_classes = model.names  # {0: 'person', 1: 'bicycle', ...}
+        except Exception as e:
+            print(f"モデルクラスの取得エラー: {e}")
+            self.model_classes = {}
+    
+    def update_class_selection_ui(self):
+        """クラス選択UIを更新"""
+        # 既存のチェックボックスをクリア
+        for checkbox in self.class_checkboxes.values():
+            checkbox.deleteLater()
+        self.class_checkboxes.clear()
+        
+        if self.no_model_label:
+            self.no_model_label.deleteLater()
+            self.no_model_label = None
+        
+        # 新しいチェックボックスを作成
+        for class_id, class_name in sorted(self.model_classes.items()):
+            checkbox = QCheckBox(f"{class_name} (ID: {class_id})")
+            checkbox.setChecked(True)  # デフォルトは全選択
+            checkbox.stateChanged.connect(lambda state, cid=class_id: self.on_class_selection_changed(cid, state))
+            self.class_layout.addWidget(checkbox)
+            self.class_checkboxes[class_id] = checkbox
+        
+        # 設定から選択状態を復元
+        self.restore_class_selection()
+    
+    def on_class_selection_changed(self, class_id, state):
+        """クラスの選択状態が変更されたときの処理"""
+        if state == Qt.CheckState.Checked.value:
+            self.selected_classes.add(class_id)
+        else:
+            self.selected_classes.discard(class_id)
+        self.save_settings()
+    
+    def select_all_classes(self):
+        """全クラスを選択"""
+        for class_id, checkbox in self.class_checkboxes.items():
+            checkbox.setChecked(True)
+            self.selected_classes.add(class_id)
+        self.save_settings()
+    
+    def deselect_all_classes(self):
+        """全クラスを解除"""
+        for class_id, checkbox in self.class_checkboxes.items():
+            checkbox.setChecked(False)
+            self.selected_classes.discard(class_id)
+        self.save_settings()
+    
     def refresh_models(self):
         self.model_combo.clear()
         print(f"Searching for models in: {MODELS_DIR}")
@@ -397,6 +516,10 @@ class InferenceWidget(QWidget):
                 print(f"Found model: {dataset_name} -> {model_path}")
         
         print(f"Total models found: {model_count}")
+        
+        # 最初のモデルが選択されたときにクラスリストを更新
+        if self.model_combo.count() > 0:
+            self.on_model_changed(0)
     
     def load_image(self):
         file_path, _ = QFileDialog.getOpenFileName(
@@ -501,7 +624,8 @@ class InferenceWidget(QWidget):
                 blur_type,
                 strength,
                 output_folder,
-                self.mask_expand_spin.value()
+                self.mask_expand_spin.value(),
+                self.selected_classes
             )
         
         # 単一画像モード
@@ -524,7 +648,8 @@ class InferenceWidget(QWidget):
                 blur_type,
                 strength,
                 output_folder,  # 単一画像でも出力フォルダを使用
-                self.mask_expand_spin.value()
+                self.mask_expand_spin.value(),
+                self.selected_classes
             )
         
         else:
@@ -652,6 +777,12 @@ class InferenceWidget(QWidget):
         self.settings.setValue("parallel_count", self.parallel_spin.value())
         self.settings.setValue("output_folder", self.output_path_edit.text())
         self.settings.setValue("mask_expansion", self.mask_expand_spin.value())
+        
+        # 選択されたクラスを保存（モデルごとに保存）
+        if self.model_combo.currentData():
+            model_name = self.model_combo.currentText()
+            selected_list = list(self.selected_classes)
+            self.settings.setValue(f"selected_classes_{model_name}", selected_list)
     
     def load_settings(self):
         """設定を読み込み"""
@@ -693,3 +824,22 @@ class InferenceWidget(QWidget):
         # マスク拡張率
         mask_expansion = self.settings.value("mask_expansion", 2, type=int)
         self.mask_expand_spin.setValue(mask_expansion)
+    
+    def restore_class_selection(self):
+        """保存されたクラス選択状態を復元"""
+        if not self.model_combo.currentData():
+            return
+            
+        model_name = self.model_combo.currentText()
+        saved_classes = self.settings.value(f"selected_classes_{model_name}", None)
+        
+        if saved_classes is not None:
+            # 保存された選択状態を復元
+            self.selected_classes = set(saved_classes)
+            for class_id, checkbox in self.class_checkboxes.items():
+                checkbox.setChecked(class_id in self.selected_classes)
+        else:
+            # デフォルトは全選択
+            self.selected_classes = set(self.model_classes.keys())
+            for checkbox in self.class_checkboxes.values():
+                checkbox.setChecked(True)
