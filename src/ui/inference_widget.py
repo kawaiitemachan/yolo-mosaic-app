@@ -18,12 +18,12 @@ class InferenceThread(QThread):
     progress_update = Signal(int, int, str)  # 現在の番号, 総数, ファイル名
     error = Signal(str)
     
-    def __init__(self, model_path, image_paths, confidence, iou, blur_type, strength, output_dir=None, mask_expansion=2, selected_classes=None):
+    def __init__(self, model_path, image_paths, confidence, blur_type, strength, output_dir=None, mask_expansion=2, selected_classes=None):
         super().__init__()
         self.model_path = model_path
         self.image_paths = image_paths if isinstance(image_paths, list) else [image_paths]
         self.confidence = confidence
-        self.iou = iou
+        self.iou = 0.9  # 固定値：検出の重複を最小限に抑える
         self.blur_type = blur_type
         self.strength = strength
         self.output_dir = output_dir
@@ -322,16 +322,6 @@ class InferenceWidget(QWidget):
         conf_layout.addWidget(self.conf_spin)
         layout.addLayout(conf_layout)
         
-        iou_layout = QHBoxLayout()
-        iou_layout.addWidget(QLabel("IoU閾値:"))
-        self.iou_spin = QDoubleSpinBox()
-        self.iou_spin.setRange(0.0, 1.0)
-        self.iou_spin.setSingleStep(0.05)
-        self.iou_spin.setValue(DEFAULT_CONFIG["inference"]["iou"])
-        self.iou_spin.valueChanged.connect(self.save_settings)
-        iou_layout.addWidget(self.iou_spin)
-        layout.addLayout(iou_layout)
-        
         return group
     
     def create_mosaic_group(self):
@@ -629,7 +619,6 @@ class InferenceWidget(QWidget):
                 model_path,
                 self.image_files,  # リストを渡す
                 self.conf_spin.value(),
-                self.iou_spin.value(),
                 blur_type,
                 strength,
                 output_folder,
@@ -653,7 +642,6 @@ class InferenceWidget(QWidget):
                 model_path,
                 str(self.current_image_path),
                 self.conf_spin.value(),
-                self.iou_spin.value(),
                 blur_type,
                 strength,
                 output_folder,  # 単一画像でも出力フォルダを使用
@@ -778,7 +766,6 @@ class InferenceWidget(QWidget):
     def save_settings(self):
         """設定を保存"""
         self.settings.setValue("confidence", self.conf_spin.value())
-        self.settings.setValue("iou", self.iou_spin.value())
         self.settings.setValue("blur_type", self.blur_type_combo.currentText())
         self.settings.setValue("blur_strength", self.blur_strength_slider.value())
         self.settings.setValue("tile_size", self.tile_size_spin.value())
@@ -798,10 +785,6 @@ class InferenceWidget(QWidget):
         # 信頼度閾値
         confidence = self.settings.value("confidence", DEFAULT_CONFIG["inference"]["confidence"], type=float)
         self.conf_spin.setValue(confidence)
-        
-        # IoU閾値
-        iou = self.settings.value("iou", DEFAULT_CONFIG["inference"]["iou"], type=float)
-        self.iou_spin.setValue(iou)
         
         # モザイクタイプ
         blur_type = self.settings.value("blur_type", DEFAULT_CONFIG["inference"]["blur_type"])
