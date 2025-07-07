@@ -353,7 +353,7 @@ class InferenceWidget(QWidget):
         mask_expand_layout = QHBoxLayout()
         mask_expand_layout.addWidget(QLabel("マスク拡張率 (%):"))
         self.mask_expand_spin = QSpinBox()
-        self.mask_expand_spin.setRange(0, 50)
+        self.mask_expand_spin.setRange(0, 10)
         self.mask_expand_spin.setValue(2)  # デフォルト2%
         self.mask_expand_spin.setSuffix("%")
         self.mask_expand_spin.setToolTip("検出されたマスクを拡張する割合")
