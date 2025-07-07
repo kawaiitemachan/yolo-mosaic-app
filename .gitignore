@@ -25,6 +25,7 @@ venv.bak/
 # Dataset files
 datasets/
 runs/
+sample_dataset/
 
 # Training results
 data/models/*/
