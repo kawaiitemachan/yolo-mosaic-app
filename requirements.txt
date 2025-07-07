@@ -7,3 +7,4 @@ torch>=2.0.0
 torchvision>=0.15.0
 matplotlib>=3.7.0
 PyYAML>=6.0.0
+pyinstaller>=6.0.0

@@ -1,14 +1,15 @@
 import os
 from pathlib import Path
+from .utils.app_paths import get_data_path, get_datasets_path, get_models_path, get_application_path
 
 # ディレクトリ設定
-BASE_DIR = Path(__file__).parent.parent
+BASE_DIR = get_application_path()
 PROJECT_ROOT = BASE_DIR  # 互換性のため
-DATA_DIR = BASE_DIR / "data"
-IMAGES_DIR = DATA_DIR / "images"
-ANNOTATIONS_DIR = DATA_DIR / "annotations"
-MODELS_DIR = DATA_DIR / "models"
-DATASETS_DIR = BASE_DIR / "datasets"
+DATA_DIR = get_data_path()
+IMAGES_DIR = get_data_path("images")
+ANNOTATIONS_DIR = get_data_path("annotations")
+MODELS_DIR = get_models_path()
+DATASETS_DIR = get_datasets_path()
 
 DEFAULT_CONFIG = {
     "annotation": {

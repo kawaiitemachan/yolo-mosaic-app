@@ -45,9 +45,43 @@ pip install -r requirements.txt
 
 ## 使用方法
 
+### 開発環境での実行
+
 ```bash
 python main.py
 ```
+
+### スタンドアロンアプリケーションの作成
+
+PyInstallerを使用して単一の実行ファイルを作成できます：
+
+```bash
+# ビルドスクリプトを使用
+./build_app.sh
+
+# または手動でビルド
+pyinstaller --onefile --windowed --name="YOLOMosaicApp" main.py
+```
+
+ビルドされたアプリケーションは `dist/` ディレクトリに作成されます。
+
+## ディレクトリ構造
+
+アプリケーションは初回起動時に以下のディレクトリを自動的に作成します：
+
+```
+YOLOMosaicApp（実行ファイル）
+├── data/
+│   ├── images/         # アノテーション用画像
+│   ├── annotations/    # アノテーションデータ
+│   └── models/         # 学習済みモデル
+└── datasets/           # データセット
+```
+
+## 注意事項
+
+- PyInstallerでビルドした場合も、データフォルダは実行ファイルと同じ階層に作成されます
+- 学習済みモデル（.ptファイル）や大きなデータセットはGitには含まれません
 
 ## ライセンス
 
