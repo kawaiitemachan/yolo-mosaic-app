@@ -18,7 +18,7 @@ class InferenceThread(QThread):
     progress_update = Signal(int, int, str)  # 現在の番号, 総数, ファイル名
     error = Signal(str)
     
-    def __init__(self, model_path, image_paths, confidence, iou, blur_type, strength, output_dir=None):
+    def __init__(self, model_path, image_paths, confidence, iou, blur_type, strength, output_dir=None, mask_expansion=2):
         super().__init__()
         self.model_path = model_path
         self.image_paths = image_paths if isinstance(image_paths, list) else [image_paths]
@@ -27,6 +27,7 @@ class InferenceThread(QThread):
         self.blur_type = blur_type
         self.strength = strength
         self.output_dir = output_dir
+        self.mask_expansion = mask_expansion
         
     def run(self):
         try:
@@ -92,7 +93,8 @@ class InferenceThread(QThread):
                             image,
                             detections,
                             self.blur_type,
-                            self.strength
+                            self.strength,
+                            self.mask_expansion
                         )
                         
                         output_path = detected_dir / Path(image_path).name
@@ -347,6 +349,18 @@ class InferenceWidget(QWidget):
         self.preserve_png_check.stateChanged.connect(self.save_settings)
         layout.addWidget(self.preserve_png_check)
         
+        # マスク拡張率設定
+        mask_expand_layout = QHBoxLayout()
+        mask_expand_layout.addWidget(QLabel("マスク拡張率 (%):"))
+        self.mask_expand_spin = QSpinBox()
+        self.mask_expand_spin.setRange(0, 50)
+        self.mask_expand_spin.setValue(2)  # デフォルト2%
+        self.mask_expand_spin.setSuffix("%")
+        self.mask_expand_spin.setToolTip("検出されたマスクを拡張する割合")
+        self.mask_expand_spin.valueChanged.connect(self.save_settings)
+        mask_expand_layout.addWidget(self.mask_expand_spin)
+        layout.addLayout(mask_expand_layout)
+        
         return group
     
     def refresh_models(self):
@@ -486,7 +500,8 @@ class InferenceWidget(QWidget):
                 self.iou_spin.value(),
                 blur_type,
                 strength,
-                output_folder
+                output_folder,
+                self.mask_expand_spin.value()
             )
         
         # 単一画像モード
@@ -508,7 +523,8 @@ class InferenceWidget(QWidget):
                 self.iou_spin.value(),
                 blur_type,
                 strength,
-                output_folder  # 単一画像でも出力フォルダを使用
+                output_folder,  # 単一画像でも出力フォルダを使用
+                self.mask_expand_spin.value()
             )
         
         else:
@@ -559,7 +575,8 @@ class InferenceWidget(QWidget):
             self.current_image,
             self.current_detections,
             blur_type,
-            strength
+            strength,
+            self.mask_expand_spin.value()
         )
         
         self.image_viewer.set_image(self.processed_image)
@@ -634,6 +651,7 @@ class InferenceWidget(QWidget):
         self.settings.setValue("preserve_png", self.preserve_png_check.isChecked())
         self.settings.setValue("parallel_count", self.parallel_spin.value())
         self.settings.setValue("output_folder", self.output_path_edit.text())
+        self.settings.setValue("mask_expansion", self.mask_expand_spin.value())
     
     def load_settings(self):
         """設定を読み込み"""
@@ -671,3 +689,7 @@ class InferenceWidget(QWidget):
         # 出力フォルダ
         output_folder = self.settings.value("output_folder", "")
         self.output_path_edit.setText(output_folder)
+        
+        # マスク拡張率
+        mask_expansion = self.settings.value("mask_expansion", 2, type=int)
+        self.mask_expand_spin.setValue(mask_expansion)

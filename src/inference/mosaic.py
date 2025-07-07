@@ -1,14 +1,73 @@
 import cv2
 import numpy as np
 
-def apply_mosaic_to_regions(image, detections, blur_type='gaussian', strength=15):
+def expand_mask(mask, expansion_percent):
+    """
+    マスクを指定された割合で拡張する
+    
+    Args:
+        mask: バイナリマスク (bool型のnumpy配列)
+        expansion_percent: 拡張率（%）
+    
+    Returns:
+        拡張されたマスク
+    """
+    if expansion_percent <= 0:
+        return mask
+    
+    # マスクの輪郭を取得
+    mask_uint8 = mask.astype(np.uint8) * 255
+    contours, _ = cv2.findContours(mask_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    # 新しいマスクを作成
+    expanded_mask = np.zeros_like(mask, dtype=np.uint8)
+    
+    for contour in contours:
+        # 輪郭の面積を計算
+        area = cv2.contourArea(contour)
+        if area <= 0:
+            continue
+        
+        # 拡張率から膨張サイズを計算
+        # 面積の平方根をベースにして、線形的な拡張を行う
+        expansion_pixels = int(np.sqrt(area) * expansion_percent / 100)
+        expansion_pixels = max(1, expansion_pixels)  # 最低1ピクセルは拡張
+        
+        # 輪郭を膨張させる
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, 
+                                         (2 * expansion_pixels + 1, 2 * expansion_pixels + 1))
+        
+        # 個別の輪郭マスクを作成
+        single_mask = np.zeros_like(mask_uint8)
+        cv2.drawContours(single_mask, [contour], -1, 255, -1)
+        
+        # 膨張処理
+        dilated = cv2.dilate(single_mask, kernel, iterations=1)
+        
+        # 拡張マスクに追加
+        expanded_mask = cv2.bitwise_or(expanded_mask, dilated)
+    
+    return expanded_mask.astype(bool)
+
+def apply_mosaic_to_regions(image, detections, blur_type='gaussian', strength=15, mask_expansion=0):
     """
     検出されたマスク領域にモザイクを適用
+    
+    Args:
+        image: 入力画像
+        detections: 検出結果のリスト
+        blur_type: モザイクのタイプ
+        strength: モザイクの強度
+        mask_expansion: マスクの拡張率（%）
     """
     result = image.copy()
     
     for detection in detections:
         mask = detection['mask']
+        
+        # マスクを拡張
+        if mask_expansion > 0:
+            mask = expand_mask(mask, mask_expansion)
         
         if blur_type == 'gaussian':
             result = apply_gaussian_blur(result, mask, strength)
@@ -130,7 +189,7 @@ def apply_tile_mosaic(image, mask, tile_size):
 def batch_process_images(image_paths, model_path, output_dir, 
                         confidence=0.25, iou=0.45, 
                         blur_type='gaussian', strength=15,
-                        preserve_png_info=False):
+                        preserve_png_info=False, mask_expansion=0):
     """
     複数の画像をバッチ処理
     """
@@ -179,7 +238,7 @@ def batch_process_images(image_paths, model_path, output_dir,
                     })
         
         if detections:
-            processed = apply_mosaic_to_regions(image_rgb, detections, blur_type, strength)
+            processed = apply_mosaic_to_regions(image_rgb, detections, blur_type, strength, mask_expansion)
             
             output_path = output_dir / f"mosaic_{image_path.name}"
             
