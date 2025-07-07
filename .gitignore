@@ -26,6 +26,9 @@ venv.bak/
 datasets/
 runs/
 
+# Training results
+data/models/*/
+
 # IDE
 .vscode/
 .idea/

@@ -1,5 +1,0 @@
-names: []
-nc: 0
-path: /Users/tao/Desktop/dev/mosaic_app/datasets/test1
-train: ./train/images
-val: ./valid/images
