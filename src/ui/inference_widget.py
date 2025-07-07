@@ -174,6 +174,7 @@ class InferenceWidget(QWidget):
         self.class_checkboxes = {}  # クラス名とチェックボックスの対応
         self.model_classes = {}  # モデルのクラス情報
         self.selected_classes = set()  # 選択されたクラスID
+        self.no_model_label = None  # 初期化
         self.init_ui()
         self.load_settings()
         
@@ -283,6 +284,11 @@ class InferenceWidget(QWidget):
         layout.addLayout(parallel_layout)
         
         layout.addStretch()
+        
+        # 最初のモデルのクラスリストを更新（UIが全て作成された後）
+        if self.model_combo.count() > 0:
+            self.on_model_changed(0)
+            
         return widget
     
     def create_model_group(self):
@@ -291,12 +297,14 @@ class InferenceWidget(QWidget):
         
         self.model_combo = QComboBox()
         self.model_combo.currentIndexChanged.connect(self.on_model_changed)
-        self.refresh_models()
         layout.addWidget(self.model_combo)
         
         refresh_btn = QPushButton("モデルリストを更新")
         refresh_btn.clicked.connect(self.refresh_models)
         layout.addWidget(refresh_btn)
+        
+        # モデルリストを更新（接続後に実行）
+        self.refresh_models()
         
         return group
     
@@ -518,7 +526,8 @@ class InferenceWidget(QWidget):
         print(f"Total models found: {model_count}")
         
         # 最初のモデルが選択されたときにクラスリストを更新
-        if self.model_combo.count() > 0:
+        # ただし、class_layoutがまだ作成されていない場合はスキップ
+        if self.model_combo.count() > 0 and hasattr(self, 'class_layout'):
             self.on_model_changed(0)
     
     def load_image(self):
