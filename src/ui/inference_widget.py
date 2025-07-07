@@ -164,7 +164,6 @@ class InferenceWidget(QWidget):
     def __init__(self):
         super().__init__()
         self.settings = QSettings("YoloMosaicApp", "Inference")
-        self.init_ui()
         self.current_image = None
         self.current_image_path = None
         self.current_detections = []
@@ -175,6 +174,7 @@ class InferenceWidget(QWidget):
         self.class_checkboxes = {}  # クラス名とチェックボックスの対応
         self.model_classes = {}  # モデルのクラス情報
         self.selected_classes = set()  # 選択されたクラスID
+        self.init_ui()
         self.load_settings()
         
     def init_ui(self):
