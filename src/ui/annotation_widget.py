@@ -365,6 +365,13 @@ class ImageCanvas(QWidget):
         elif event.key() == Qt.Key.Key_Y and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
             # リドゥ
             self.redo()
+        elif event.key() >= Qt.Key.Key_0 and event.key() <= Qt.Key.Key_9:
+            # 数字キーは親ウィジェット（AnnotationWidget）に転送
+            parent = self.parent()
+            while parent and not isinstance(parent, AnnotationWidget):
+                parent = parent.parent()
+            if parent:
+                parent.keyPressEvent(event)
         else:
             # その他のキーは親ウィジェットで処理
             super().keyPressEvent(event)
@@ -640,6 +647,9 @@ class AnnotationWidget(QWidget):
         self.current_image_index = -1  # 現在選択されている画像のインデックス
         self.init_ui()
         self.current_image_path = None
+        
+        # フォーカスポリシーを設定してキーボードイベントを受け取れるようにする
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
     
     def closeEvent(self, event):
         """ウィジェットが閉じられる時に自動保存"""
@@ -704,7 +714,7 @@ class AnnotationWidget(QWidget):
         
         layout.addWidget(QLabel("ラベル:"))
         self.label_combo = QComboBox()
-        self.label_combo.currentTextChanged.connect(self.canvas.set_label)
+        self.label_combo.currentIndexChanged.connect(self.on_label_changed)
         layout.addWidget(self.label_combo)
         
         # クラス管理ボタン
@@ -740,6 +750,9 @@ class AnnotationWidget(QWidget):
             "• ポリゴンをクリック: 選択\n"
             "• Delete/Backspace: 削除\n"
             "• 右クリック: メニュー表示\n\n"
+            "【ラベル選択】\n"
+            "• 1-9キー: 対応するラベルを選択\n"
+            "• 0キー: 10番目のラベルを選択\n\n"
             "【画像ナビゲーション】\n"
             "• ←/→ キー: 前後の画像へ移動\n"
             "• ボタンクリック: 前後の画像へ\n\n"
@@ -753,6 +766,14 @@ class AnnotationWidget(QWidget):
         
         layout.addStretch()
         return widget
+    
+    def on_label_changed(self, index):
+        """ラベル選択が変更されたときの処理"""
+        if index >= 0 and index < self.label_combo.count():
+            # 実際のクラス名を取得
+            class_name = self.label_combo.itemData(index)
+            if class_name:
+                self.canvas.set_label(class_name)
     
     def select_dataset(self):
         """データセット選択ダイアログを表示"""
@@ -959,14 +980,30 @@ class AnnotationWidget(QWidget):
         self.label_combo.clear()
         
         if classes:
-            self.label_combo.addItems(classes)
+            # ショートカットキー付きでラベルを表示
+            for i, class_name in enumerate(classes):
+                if i < 9:
+                    display_text = f"[{i+1}] {class_name}"
+                elif i == 9:
+                    display_text = f"[0] {class_name}"
+                else:
+                    display_text = f"     {class_name}"
+                self.label_combo.addItem(display_text)
+                # 実際のクラス名を保存
+                self.label_combo.setItemData(i, class_name)
             
             # Canvasの色設定を更新
             self.canvas.set_class_colors(classes)
             
             # 前の選択を復元
-            if current_label in classes:
-                self.label_combo.setCurrentText(current_label)
+            current_index = -1
+            for i in range(self.label_combo.count()):
+                if self.label_combo.itemData(i) == current_label:
+                    current_index = i
+                    break
+            
+            if current_index >= 0:
+                self.label_combo.setCurrentIndex(current_index)
             elif classes:
                 self.label_combo.setCurrentIndex(0)
                 self.canvas.set_label(classes[0])
@@ -1121,6 +1158,15 @@ class AnnotationWidget(QWidget):
         elif event.key() == Qt.Key.Key_Right:
             # 右矢印キー: 次の画像へ
             self.go_to_next_image()
+        elif event.key() >= Qt.Key.Key_1 and event.key() <= Qt.Key.Key_9:
+            # 数字キー1-9: ラベル選択
+            index = event.key() - Qt.Key.Key_1  # 0-8のインデックスに変換
+            if index < self.label_combo.count():
+                self.label_combo.setCurrentIndex(index)
+        elif event.key() == Qt.Key.Key_0:
+            # 数字キー0: 10番目のラベル選択
+            if self.label_combo.count() >= 10:
+                self.label_combo.setCurrentIndex(9)
         else:
             # その他のキーはデフォルト処理
             super().keyPressEvent(event)
@@ -1212,9 +1258,10 @@ class AnnotationWidget(QWidget):
             self.notify_auto_save()
             
             # 新しく追加したラベルを選択
-            index = self.label_combo.findText(class_name)
-            if index >= 0:
-                self.label_combo.setCurrentIndex(index)
+            for i in range(self.label_combo.count()):
+                if self.label_combo.itemData(i) == class_name:
+                    self.label_combo.setCurrentIndex(i)
+                    break
             
         except Exception as e:
             QMessageBox.critical(self, "エラー", f"クラス追加エラー: {str(e)}")

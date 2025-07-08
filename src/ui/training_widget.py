@@ -50,6 +50,8 @@ class TrainingThread(QThread):
     def __init__(self, config):
         super().__init__()
         self.config = config
+        self._stop_requested = False
+        self.model = None
         
         # Mac環境でのマルチプロセッシング問題を回避
         import platform
@@ -95,11 +97,18 @@ class TrainingThread(QThread):
             
             try:
                 self.progress.emit("モデルを読み込み中...")
-                model = YOLO(self.config['model'])
+                self.model = YOLO(self.config['model'])
                 
                 device, device_name = get_device()
                 if self.config.get('device', 'auto') != 'auto':
                     device = self.config['device']
+                
+                # 停止要求をチェックするコールバック関数
+                def on_epoch_end(trainer):
+                    """epoch終了時のコールバック"""
+                    if self._stop_requested:
+                        self.progress.emit("学習を停止しています...")
+                        trainer.stop = True  # YOLOの学習を停止
                     
                 # Mac環境でMPSデバイスの場合の注意喚起
                 import platform
@@ -140,19 +149,35 @@ class TrainingThread(QThread):
                         try:
                             # まずMPSで試行
                             self.progress.emit("MPSデバイスで学習を開始します...")
-                            results = model.train(**train_kwargs)
+                            # コールバックを追加
+                            results = self.model.train(
+                                **train_kwargs,
+                                callbacks={'on_epoch_end': on_epoch_end}
+                            )
                         except Exception as mps_error:
                             self.progress.emit(f"MPSエラー: {str(mps_error)}")
                             self.progress.emit("CPUモードに切り替えて再試行します...")
                             train_kwargs['device'] = 'cpu'
-                            results = model.train(**train_kwargs)
+                            results = self.model.train(
+                                **train_kwargs,
+                                callbacks={'on_epoch_end': on_epoch_end}
+                            )
                     else:
-                        results = model.train(**train_kwargs)
+                        results = self.model.train(
+                            **train_kwargs,
+                            callbacks={'on_epoch_end': on_epoch_end}
+                        )
                 else:
                     # Mac以外の環境
-                    results = model.train(**train_kwargs)
+                    results = self.model.train(
+                        **train_kwargs,
+                        callbacks={'on_epoch_end': on_epoch_end}
+                    )
                 
-                self.finished.emit(True, "学習が完了しました")
+                if self._stop_requested:
+                    self.finished.emit(True, "学習を停止しました")
+                else:
+                    self.finished.emit(True, "学習が完了しました")
                 
             finally:
                 # 標準出力とエラー出力を復元
@@ -173,6 +198,11 @@ class TrainingThread(QThread):
             if 'old_stderr' in locals():
                 sys.stderr = old_stderr
             self.finished.emit(False, f"エラー: {str(e)}")
+    
+    def request_stop(self):
+        """学習の停止を要求"""
+        self._stop_requested = True
+        self.progress.emit("学習停止を要求しました...")
 
 class DatasetDropArea(QWidget):
     """データセットのドラッグ＆ドロップエリア"""
@@ -268,9 +298,56 @@ class TrainingWidget(QWidget):
         training_group = self.create_training_group()
         layout.addWidget(training_group)
         
+        # 学習コントロールボタンのレイアウト
+        button_layout = QHBoxLayout()
+        
         self.start_button = QPushButton("学習開始")
         self.start_button.clicked.connect(self.start_training)
-        layout.addWidget(self.start_button)
+        self.start_button.setStyleSheet("""
+            QPushButton {
+                background-color: #16a34a;
+                color: white;
+                border: none;
+                padding: 10px 20px;
+                border-radius: 5px;
+                font-weight: bold;
+                font-size: 14px;
+            }
+            QPushButton:hover {
+                background-color: #15803d;
+            }
+            QPushButton:disabled {
+                background-color: #d1d5db;
+                color: #9ca3af;
+            }
+        """)
+        button_layout.addWidget(self.start_button)
+        
+        self.stop_button = QPushButton("学習停止")
+        self.stop_button.clicked.connect(self.stop_training)
+        self.stop_button.setEnabled(False)
+        self.stop_button.setStyleSheet("""
+            QPushButton {
+                background-color: #dc2626;
+                color: white;
+                border: none;
+                padding: 10px 20px;
+                border-radius: 5px;
+                font-weight: bold;
+                font-size: 14px;
+            }
+            QPushButton:hover {
+                background-color: #b91c1c;
+            }
+            QPushButton:disabled {
+                background-color: #d1d5db;
+                color: #9ca3af;
+            }
+        """)
+        button_layout.addWidget(self.stop_button)
+        
+        button_layout.addStretch()
+        layout.addLayout(button_layout)
         
         self.progress_bar = QProgressBar()
         self.progress_bar.hide()
@@ -572,6 +649,7 @@ class TrainingWidget(QWidget):
         }
         
         self.start_button.setEnabled(False)
+        self.stop_button.setEnabled(True)
         self.progress_bar.show()
         self.progress_bar.setRange(0, 0)
         
@@ -657,10 +735,19 @@ class TrainingWidget(QWidget):
         
         return result
     
+    def stop_training(self):
+        """学習を停止"""
+        if self.training_thread and self.training_thread.isRunning():
+            self.log("学習停止を要求しています...")
+            self.training_thread.request_stop()
+            self.stop_button.setEnabled(False)
+    
     def on_training_finished(self, success, message):
         self.start_button.setEnabled(True)
+        self.stop_button.setEnabled(False)
         self.progress_bar.hide()
         self.log(message)
+        self.training_thread = None
         
         if success:
             self.log(f"学習済みモデルは {MODELS_DIR} に保存されました")
