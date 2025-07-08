@@ -285,6 +285,10 @@ class InferenceWidget(QWidget):
         
         layout.addStretch()
         
+        # UI作成後にモデルリストを更新し、イベントを接続
+        self.model_combo.currentIndexChanged.connect(self.on_model_changed)
+        self.refresh_models()
+        
         # 最初のモデルのクラスリストを更新（UIが全て作成された後）
         if self.model_combo.count() > 0:
             self.on_model_changed(0)
@@ -296,15 +300,12 @@ class InferenceWidget(QWidget):
         layout = QVBoxLayout(group)
         
         self.model_combo = QComboBox()
-        self.model_combo.currentIndexChanged.connect(self.on_model_changed)
+        # 初期化中は接続しない
         layout.addWidget(self.model_combo)
         
         refresh_btn = QPushButton("モデルリストを更新")
         refresh_btn.clicked.connect(self.refresh_models)
         layout.addWidget(refresh_btn)
-        
-        # モデルリストを更新（接続後に実行）
-        self.refresh_models()
         
         return group
     
@@ -438,6 +439,10 @@ class InferenceWidget(QWidget):
     
     def update_class_selection_ui(self):
         """クラス選択UIを更新"""
+        # class_layoutが初期化されているか確認
+        if not hasattr(self, 'class_layout'):
+            return
+            
         # 既存のチェックボックスをクリア
         for checkbox in self.class_checkboxes.values():
             checkbox.deleteLater()

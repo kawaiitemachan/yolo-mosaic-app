@@ -1,6 +1,6 @@
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                                QTabWidget, QPushButton, QLabel, QStatusBar,
-                               QToolBar, QMessageBox, QDialog)
+                               QToolBar, QMessageBox, QDialog, QSizePolicy)
 from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QAction, QIcon
 
@@ -13,6 +13,10 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("YOLO モザイク処理アプリケーション")
         self.setGeometry(100, 100, 1200, 800)
+        
+        # ウィンドウサイズを可変にする
+        self.setMinimumSize(800, 600)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         
         ensure_directories()
         self.init_ui()
@@ -40,11 +44,13 @@ class MainWindow(QMainWindow):
     def init_ui(self):
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
+        central_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         layout = QVBoxLayout(central_widget)
         
         toolbar = self.create_toolbar()
         
         self.tab_widget = QTabWidget()
+        self.tab_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         layout.addWidget(self.tab_widget)
         
         from .annotation_widget import AnnotationWidget

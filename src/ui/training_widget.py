@@ -22,9 +22,16 @@ class OutputCapture:
         self.is_stderr = is_stderr
         
     def write(self, message):
+        # Windows環境でのエンコーディング対策
+        if isinstance(message, bytes):
+            message = message.decode('utf-8', errors='replace')
         self.terminal.write(message)
         if message.strip():
-            self.signal.emit(message.strip())
+            # UTF-8エンコーディングエラーを回避
+            try:
+                self.signal.emit(message.strip())
+            except UnicodeDecodeError:
+                self.signal.emit(message.encode('utf-8', errors='replace').decode('utf-8'))
             
     def flush(self):
         self.terminal.flush()
@@ -41,7 +48,11 @@ class LogHandler(logging.Handler):
     def emit(self, record):
         msg = self.format(record)
         if msg.strip():
-            self.signal.emit(msg)
+            # Windows環境でのエンコーディング対策
+            try:
+                self.signal.emit(msg)
+            except UnicodeDecodeError:
+                self.signal.emit(msg.encode('utf-8', errors='replace').decode('utf-8'))
 
 class TrainingThread(QThread):
     progress = Signal(str)
@@ -52,6 +63,7 @@ class TrainingThread(QThread):
         self.config = config
         self._stop_requested = False
         self.model = None
+        self._training_process = None
         
         # Mac環境でのマルチプロセッシング問題を回避
         import platform
@@ -66,6 +78,19 @@ class TrainingThread(QThread):
     def run(self):
         try:
             from ultralytics import YOLO
+            
+            # Windows環境でのエンコーディング設定
+            import locale
+            import os
+            if os.name == 'nt':  # Windows
+                # UTF-8モードを強制
+                os.environ['PYTHONIOENCODING'] = 'utf-8'
+                # Windows環境でコンソール出力をUTF-8に設定
+                try:
+                    import subprocess
+                    subprocess.run(['chcp', '65001'], shell=True, capture_output=True)
+                except:
+                    pass
             
             # 標準出力とエラー出力を保存
             old_stdout = sys.stdout
@@ -103,12 +128,13 @@ class TrainingThread(QThread):
                 if self.config.get('device', 'auto') != 'auto':
                     device = self.config['device']
                 
-                # 停止要求をチェックするコールバック関数
-                def on_epoch_end(trainer):
-                    """epoch終了時のコールバック"""
+                # 学習停止機能のためのコールバック設定
+                def on_train_batch_end(trainer):
+                    """各バッチの終了時に停止要求をチェック"""
                     if self._stop_requested:
-                        self.progress.emit("学習を停止しています...")
-                        trainer.stop = True  # YOLOの学習を停止
+                        trainer.stop_training = True
+                        return False
+                    return True
                     
                 # Mac環境でMPSデバイスの場合の注意喚起
                 import platform
@@ -140,39 +166,47 @@ class TrainingThread(QThread):
                 torch_logger.setLevel(logging.INFO)
                 torch_logger.addHandler(log_handler)
                 
-                # Mac環境では追加の安全対策
-                if platform.system() == 'Darwin':
-                    train_kwargs['plots'] = False  # プロットを無効化
-                    train_kwargs['cache'] = False  # キャッシュを無効化
-                    # MPSデバイスで問題が発生した場合はCPUにフォールバック
-                    if 'mps' in str(device):
-                        try:
-                            # まずMPSで試行
-                            self.progress.emit("MPSデバイスで学習を開始します...")
-                            # コールバックを追加
-                            results = self.model.train(
-                                **train_kwargs,
-                                callbacks={'on_epoch_end': on_epoch_end}
-                            )
-                        except Exception as mps_error:
-                            self.progress.emit(f"MPSエラー: {str(mps_error)}")
-                            self.progress.emit("CPUモードに切り替えて再試行します...")
-                            train_kwargs['device'] = 'cpu'
-                            results = self.model.train(
-                                **train_kwargs,
-                                callbacks={'on_epoch_end': on_epoch_end}
-                            )
+                # 学習の実行（停止機能付き）
+                try:
+                    # カスタムコールバックを追加
+                    from ultralytics.utils.callbacks import add_integration_callbacks
+                    
+                    # 停止チェック用のカスタムコールバック
+                    def check_stop_training(trainer):
+                        if self._stop_requested:
+                            self.progress.emit("学習を停止しています...")
+                            trainer.stop = True
+                            return False
+                    
+                    # Mac環境では追加の安全対策
+                    if platform.system() == 'Darwin':
+                        train_kwargs['plots'] = False  # プロットを無効化
+                        train_kwargs['cache'] = False  # キャッシュを無効化
+                        # MPSデバイスで問題が発生した場合はCPUにフォールバック
+                        if 'mps' in str(device):
+                            try:
+                                # まずMPSで試行
+                                self.progress.emit("MPSデバイスで学習を開始します...")
+                                # 停止チェックのためにバッチごとにチェック
+                                self.model.add_callback('on_train_batch_end', check_stop_training)
+                                results = self.model.train(**train_kwargs)
+                            except Exception as mps_error:
+                                self.progress.emit(f"MPSエラー: {str(mps_error)}")
+                                self.progress.emit("CPUモードに切り替えて再試行します...")
+                                train_kwargs['device'] = 'cpu'
+                                self.model.add_callback('on_train_batch_end', check_stop_training)
+                                results = self.model.train(**train_kwargs)
+                        else:
+                            self.model.add_callback('on_train_batch_end', check_stop_training)
+                            results = self.model.train(**train_kwargs)
                     else:
-                        results = self.model.train(
-                            **train_kwargs,
-                            callbacks={'on_epoch_end': on_epoch_end}
-                        )
-                else:
-                    # Mac以外の環境
-                    results = self.model.train(
-                        **train_kwargs,
-                        callbacks={'on_epoch_end': on_epoch_end}
-                    )
+                        # Mac以外の環境
+                        self.model.add_callback('on_train_batch_end', check_stop_training)
+                        results = self.model.train(**train_kwargs)
+                except AttributeError:
+                    # add_callbackがサポートされていない場合の代替方法
+                    self.progress.emit("警告: リアルタイム停止機能はこのバージョンではサポートされていません")
+                    results = self.model.train(**train_kwargs)
                 
                 if self._stop_requested:
                     self.finished.emit(True, "学習を停止しました")
@@ -203,6 +237,15 @@ class TrainingThread(QThread):
         """学習の停止を要求"""
         self._stop_requested = True
         self.progress.emit("学習停止を要求しました...")
+        
+        # 強制終了オプション（最終手段）
+        if hasattr(self, 'model') and self.model:
+            try:
+                # Ultralyticsのトレーナーに直接アクセスして停止
+                if hasattr(self.model, 'trainer') and self.model.trainer:
+                    self.model.trainer.stop = True
+            except:
+                pass
 
 class DatasetDropArea(QWidget):
     """データセットのドラッグ＆ドロップエリア"""
@@ -663,8 +706,18 @@ class TrainingWidget(QWidget):
     
     def log(self, message):
         """ログメッセージを表示"""
-        # メッセージを追加
-        self.log_text.appendPlainText(message)
+        # Windows環境でのエンコーディング対策
+        if isinstance(message, bytes):
+            message = message.decode('utf-8', errors='replace')
+        
+        # 特殊文字のエスケープ処理
+        try:
+            # メッセージを追加
+            self.log_text.appendPlainText(message)
+        except Exception:
+            # エラーが発生した場合は安全な文字列に変換
+            safe_message = message.encode('utf-8', errors='replace').decode('utf-8')
+            self.log_text.appendPlainText(safe_message)
         
         # カーソルを最後に移動して、スクロールバーを最下部に
         self.log_text.moveCursor(QTextCursor.MoveOperation.End)
