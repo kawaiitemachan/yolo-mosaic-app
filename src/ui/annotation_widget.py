@@ -2,10 +2,11 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                                QListWidget, QComboBox, QLabel, QSlider,
                                QSplitter, QFileDialog, QListWidgetItem,
                                QMessageBox, QDialog, QInputDialog, QSizePolicy,
-                               QMenu, QDialogButtonBox, QLineEdit)
+                               QMenu, QDialogButtonBox, QLineEdit, QGroupBox)
 from PySide6.QtCore import Qt, Signal, QPointF, QTimer, QRectF
 from PySide6.QtGui import (QPainter, QPen, QColor, QPolygonF, QImage, QPixmap,
                           QCursor, QAction)
+from enum import Enum
 
 import cv2
 import numpy as np
@@ -14,8 +15,15 @@ import yaml
 
 from ..config import IMAGES_DIR, DEFAULT_CONFIG
 
+class CanvasMode(Enum):
+    """キャンバスの操作モード"""
+    POLYGON = "polygon"  # ポリゴン作成モード
+    HAND = "hand"       # ハンドモード（移動専用）
+
 class ImageCanvas(QWidget):
     polygon_completed = Signal(list)
+    zoom_changed = Signal(float)  # ズームレベル変更シグナル
+    mode_changed = Signal(CanvasMode)  # モード変更シグナル
     
     def __init__(self):
         super().__init__()
@@ -29,6 +37,20 @@ class ImageCanvas(QWidget):
         self.offset = QPointF(0, 0)
         self.class_colors = {}  # クラスごとの色を動的に管理
         self.setMinimumSize(400, 300)  # 最小サイズを設定
+        
+        # 操作モード
+        self.mode = CanvasMode.POLYGON  # デフォルトはポリゴンモード
+        
+        # ズーム関連
+        self.min_scale = 0.1  # 10%
+        self.max_scale = 5.0  # 500%
+        self.zoom_step = 1.1  # ズームステップ
+        
+        # パン（移動）関連
+        self.panning = False
+        self.pan_start_pos = QPointF()
+        self.pan_start_offset = QPointF()
+        self.space_pressed = False  # スペースキー押下状態
         
         # サイズポリシーを設定（拡張可能）
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -55,6 +77,9 @@ class ImageCanvas(QWidget):
         # 点の検出範囲（ピクセル）
         self.point_detection_radius = 8
         
+        # マウスホイールイベントを受け取る
+        self.setAttribute(Qt.WidgetAttribute.WA_AcceptTouchEvents, True)
+        
     def load_image(self, image_path):
         self.image = QImage(str(image_path))
         self.pixmap = QPixmap.fromImage(self.image)
@@ -79,6 +104,7 @@ class ImageCanvas(QWidget):
             QTimer.singleShot(0, self.fit_image_to_widget)
         
         self.update()
+        self.zoom_changed.emit(self.scale * 100)
         
     def fit_image_to_widget(self):
         if not self.pixmap or self.pixmap.width() <= 0 or self.pixmap.height() <= 0:
@@ -113,6 +139,9 @@ class ImageCanvas(QWidget):
             (widget_width - scaled_width) / 2.0,
             (widget_height - scaled_height) / 2.0
         )
+        
+        # ズームレベルを通知
+        self.zoom_changed.emit(self.scale * 100)
     
     def resizeEvent(self, event):
         """ウィジェットのサイズが変更されたときに画像を再フィット"""
@@ -246,12 +275,22 @@ class ImageCanvas(QWidget):
             
         pos = (event.position() - self.offset) / self.scale
         
+        # 中ボタンまたはスペース+左クリックまたはハンドモードでパン開始
+        if event.button() == Qt.MouseButton.MiddleButton or \
+           (event.button() == Qt.MouseButton.LeftButton and self.space_pressed) or \
+           (event.button() == Qt.MouseButton.LeftButton and self.mode == CanvasMode.HAND):
+            self.panning = True
+            self.pan_start_pos = event.position()
+            self.pan_start_offset = self.offset
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            return
+        
         # 画像の範囲内かチェック
         if not (0 <= pos.x() <= self.pixmap.width() and 0 <= pos.y() <= self.pixmap.height()):
             return
         
-        # 左クリック
-        if event.button() == Qt.MouseButton.LeftButton:
+        # 左クリック（ポリゴンモードのみ）
+        if event.button() == Qt.MouseButton.LeftButton and not self.space_pressed and self.mode == CanvasMode.POLYGON:
             # 既存のポリゴンの点をクリックしたかチェック
             clicked_polygon, clicked_point = self.find_point_at_position(pos)
             
@@ -294,13 +333,21 @@ class ImageCanvas(QWidget):
         
         # 右クリック
         elif event.button() == Qt.MouseButton.RightButton:
-            # コンテキストメニューを表示
-            self.show_context_menu(event.globalPosition().toPoint())
+            # ポリゴンモードの時のみコンテキストメニューを表示
+            if self.mode == CanvasMode.POLYGON:
+                self.show_context_menu(event.globalPosition().toPoint())
     
     def mouseMoveEvent(self, event):
         if not self.pixmap:
             return
             
+        # パン中の場合
+        if self.panning:
+            delta = event.position() - self.pan_start_pos
+            self.offset = self.pan_start_offset + delta
+            self.update()
+            return
+        
         pos = (event.position() - self.offset) / self.scale
         
         # ドラッグ中の場合
@@ -328,9 +375,15 @@ class ImageCanvas(QWidget):
             self.hover_start_point = False
         
         # カーソルを変更
-        if self.hovering_polygon_index >= 0 or self.hover_start_point:
+        if self.mode == CanvasMode.HAND:
+            # ハンドモードでは常に手のカーソル
+            self.setCursor(Qt.CursorShape.OpenHandCursor)
+        elif self.space_pressed:
+            self.setCursor(Qt.CursorShape.OpenHandCursor)
+        elif self.hovering_polygon_index >= 0 or self.hover_start_point:
             self.setCursor(Qt.CursorShape.PointingHandCursor)
         else:
+            # ポリゴンモードでは十字カーソル
             self.setCursor(Qt.CursorShape.CrossCursor)
         
         # ホバー状態が変わった場合のみ再描画
@@ -338,7 +391,12 @@ class ImageCanvas(QWidget):
             self.update()
     
     def mouseReleaseEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton:
+        if event.button() == Qt.MouseButton.MiddleButton or \
+           (event.button() == Qt.MouseButton.LeftButton and self.panning):
+            self.panning = False
+            # カーソルを適切に更新
+            self.update_cursor()
+        elif event.button() == Qt.MouseButton.LeftButton:
             if self.dragging:
                 self.dragging = False
                 self.save_state()  # 編集後の状態を保存
@@ -365,6 +423,26 @@ class ImageCanvas(QWidget):
         elif event.key() == Qt.Key.Key_Y and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
             # リドゥ
             self.redo()
+        elif event.key() == Qt.Key.Key_Space:
+            # スペースキーでパンモード
+            self.space_pressed = True
+            self.setCursor(Qt.CursorShape.OpenHandCursor)
+        elif event.key() == Qt.Key.Key_0 and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            # Ctrl+0でフィット表示
+            self.fit_image_to_widget()
+            self.update()
+        elif event.key() == Qt.Key.Key_Plus and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            # Ctrl++でズームイン
+            self.zoom_in()
+        elif event.key() == Qt.Key.Key_Minus and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            # Ctrl+-でズームアウト
+            self.zoom_out()
+        elif event.key() == Qt.Key.Key_H:
+            # Hキーでハンドモード
+            self.set_mode(CanvasMode.HAND)
+        elif event.key() == Qt.Key.Key_P:
+            # Pキーでポリゴンモード
+            self.set_mode(CanvasMode.POLYGON)
         elif event.key() >= Qt.Key.Key_0 and event.key() <= Qt.Key.Key_9:
             # 数字キーは親ウィジェット（AnnotationWidget）に転送
             parent = self.parent()
@@ -375,6 +453,106 @@ class ImageCanvas(QWidget):
         else:
             # その他のキーは親ウィジェットで処理
             super().keyPressEvent(event)
+    
+    def keyReleaseEvent(self, event):
+        if event.key() == Qt.Key.Key_Space:
+            self.space_pressed = False
+            if not self.panning:
+                # パン中でなければモードに応じたカーソルに戻す
+                self.update_cursor()
+        else:
+            super().keyReleaseEvent(event)
+    
+    def wheelEvent(self, event):
+        """\u30de\u30a6\u30b9\u30db\u30a4\u30fc\u30eb\u3067\u30ba\u30fc\u30e0"""
+        if not self.pixmap:
+            return
+        
+        # Ctrlキーを押しているか、または常にホイールでズーム
+        # マウス位置を中心にズーム
+        mouse_pos = event.position()
+        delta = event.angleDelta().y()
+        
+        if delta > 0:
+            # ズームイン
+            self.zoom_to_point(mouse_pos, self.zoom_step)
+        else:
+            # ズームアウト
+            self.zoom_to_point(mouse_pos, 1.0 / self.zoom_step)
+    
+    def zoom_to_point(self, point, factor):
+        """\u6307\u5b9a\u30dd\u30a4\u30f3\u30c8\u3092\u4e2d\u5fc3\u306b\u30ba\u30fc\u30e0"""
+        # 新しいスケールを計算
+        new_scale = self.scale * factor
+        new_scale = max(self.min_scale, min(self.max_scale, new_scale))
+        
+        if new_scale == self.scale:
+            return
+        
+        # マウス位置を画像座標に変換
+        img_pos = (point - self.offset) / self.scale
+        
+        # スケールを更新
+        self.scale = new_scale
+        
+        # オフセットを調整してマウス位置が同じ画像座標を指すようにする
+        self.offset = point - img_pos * self.scale
+        
+        self.update()
+        self.zoom_changed.emit(self.scale * 100)
+    
+    def zoom_in(self):
+        """\u30ba\u30fc\u30e0\u30a4\u30f3"""
+        center = QPointF(self.width() / 2, self.height() / 2)
+        self.zoom_to_point(center, self.zoom_step)
+    
+    def zoom_out(self):
+        """\u30ba\u30fc\u30e0\u30a2\u30a6\u30c8"""
+        center = QPointF(self.width() / 2, self.height() / 2)
+        self.zoom_to_point(center, 1.0 / self.zoom_step)
+    
+    def set_zoom(self, zoom_percentage):
+        """\u30ba\u30fc\u30e0\u30ec\u30d9\u30eb\u3092\u76f4\u63a5\u8a2d\u5b9a"""
+        new_scale = zoom_percentage / 100.0
+        new_scale = max(self.min_scale, min(self.max_scale, new_scale))
+        
+        if new_scale != self.scale:
+            center = QPointF(self.width() / 2, self.height() / 2)
+            factor = new_scale / self.scale
+            self.zoom_to_point(center, factor)
+    
+    def set_mode(self, mode):
+        """操作モードを設定"""
+        if self.mode != mode:
+            self.mode = mode
+            self.mode_changed.emit(mode)
+            
+            # モード変更時の処理
+            if mode == CanvasMode.HAND:
+                # ハンドモードでは作成中のポリゴンをキャンセル
+                if self.current_polygon:
+                    self.current_polygon = []
+                    self.update()
+                # 編集モードも終了
+                if self.editing_mode:
+                    self.selected_polygon_index = -1
+                    self.selected_point_index = -1
+                    self.editing_mode = False
+                    self.update()
+            
+            # カーソルを更新
+            self.update_cursor()
+    
+    def update_cursor(self):
+        """現在の状態に応じてカーソルを更新"""
+        if self.mode == CanvasMode.HAND:
+            self.setCursor(Qt.CursorShape.OpenHandCursor)
+        elif self.space_pressed:
+            self.setCursor(Qt.CursorShape.OpenHandCursor)
+        elif self.hovering_polygon_index >= 0 or self.hover_start_point:
+            self.setCursor(Qt.CursorShape.PointingHandCursor)
+        else:
+            self.setCursor(Qt.CursorShape.CrossCursor)
     
     def complete_polygon(self):
         if len(self.current_polygon) >= 3:
@@ -662,6 +840,8 @@ class AnnotationWidget(QWidget):
         
         self.canvas = ImageCanvas()
         self.canvas.polygon_completed.connect(self.on_polygon_completed)
+        self.canvas.zoom_changed.connect(self.on_zoom_changed)
+        self.canvas.mode_changed.connect(self.on_mode_changed)
         left_panel = self.create_left_panel()
         
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -692,6 +872,114 @@ class AnnotationWidget(QWidget):
         self.split_combo.addItems(["train (訓練用)", "valid (検証用)"])
         self.split_combo.currentIndexChanged.connect(self.on_split_changed)
         layout.addWidget(self.split_combo)
+        
+        # ズームコントロール
+        zoom_group = QGroupBox("ズーム")
+        zoom_layout = QVBoxLayout(zoom_group)
+        
+        # ズームレベル表示
+        self.zoom_label = QLabel("100%")
+        self.zoom_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.zoom_label.setStyleSheet("QLabel { font-size: 14px; font-weight: bold; }")
+        zoom_layout.addWidget(self.zoom_label)
+        
+        # ズームボタン
+        zoom_btn_layout = QHBoxLayout()
+        self.zoom_in_btn = QPushButton("+")
+        self.zoom_in_btn.clicked.connect(self.canvas.zoom_in)
+        self.zoom_in_btn.setToolTip("ズームイン (Ctrl++, ホイール上)")
+        self.zoom_out_btn = QPushButton("-")
+        self.zoom_out_btn.clicked.connect(self.canvas.zoom_out)
+        self.zoom_out_btn.setToolTip("ズームアウト (Ctrl+-, ホイール下)")
+        self.zoom_fit_btn = QPushButton("フィット")
+        self.zoom_fit_btn.clicked.connect(self.fit_image)
+        self.zoom_fit_btn.setToolTip("画像をウィンドウにフィット (Ctrl+0)")
+        
+        zoom_btn_layout.addWidget(self.zoom_out_btn)
+        zoom_btn_layout.addWidget(self.zoom_fit_btn)
+        zoom_btn_layout.addWidget(self.zoom_in_btn)
+        zoom_layout.addLayout(zoom_btn_layout)
+        
+        # ズームスライダー
+        self.zoom_slider = QSlider(Qt.Orientation.Horizontal)
+        self.zoom_slider.setMinimum(10)  # 10%
+        self.zoom_slider.setMaximum(500)  # 500%
+        self.zoom_slider.setValue(100)  # 100%
+        self.zoom_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self.zoom_slider.setTickInterval(100)
+        self.zoom_slider.valueChanged.connect(self.on_zoom_slider_changed)
+        zoom_layout.addWidget(self.zoom_slider)
+        
+        # プリセットズームボタン
+        preset_layout = QHBoxLayout()
+        for percentage in [50, 100, 200]:
+            btn = QPushButton(f"{percentage}%")
+            btn.clicked.connect(lambda checked, p=percentage: self.canvas.set_zoom(p))
+            preset_layout.addWidget(btn)
+        zoom_layout.addLayout(preset_layout)
+        
+        layout.addWidget(zoom_group)
+        
+        # モード選択
+        mode_group = QGroupBox("操作モード")
+        mode_layout = QVBoxLayout(mode_group)
+        
+        # 現在のモード表示
+        self.mode_label = QLabel("ポリゴン作成モード")
+        self.mode_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.mode_label.setStyleSheet("""
+            QLabel {
+                font-size: 14px;
+                font-weight: bold;
+                padding: 8px;
+                background-color: #3b82f6;
+                color: white;
+                border-radius: 5px;
+            }
+        """)
+        mode_layout.addWidget(self.mode_label)
+        
+        # モード切り替えボタン
+        mode_btn_layout = QHBoxLayout()
+        
+        self.polygon_mode_btn = QPushButton("ポリゴン [P]")
+        self.polygon_mode_btn.clicked.connect(lambda: self.canvas.set_mode(CanvasMode.POLYGON))
+        self.polygon_mode_btn.setCheckable(True)
+        self.polygon_mode_btn.setChecked(True)
+        self.polygon_mode_btn.setToolTip("ポリゴン作成モード (Pキー)")
+        
+        self.hand_mode_btn = QPushButton("ハンド [H]")
+        self.hand_mode_btn.clicked.connect(lambda: self.canvas.set_mode(CanvasMode.HAND))
+        self.hand_mode_btn.setCheckable(True)
+        self.hand_mode_btn.setToolTip("ハンドモード - 画像移動専用 (Hキー)")
+        
+        # ボタングループ風のスタイル
+        button_style = """
+            QPushButton {
+                padding: 8px;
+                border: 1px solid #d1d5db;
+                background-color: white;
+            }
+            QPushButton:checked {
+                background-color: #3b82f6;
+                color: white;
+                border: 1px solid #3b82f6;
+            }
+            QPushButton:hover {
+                background-color: #f3f4f6;
+            }
+            QPushButton:checked:hover {
+                background-color: #2563eb;
+            }
+        """
+        self.polygon_mode_btn.setStyleSheet(button_style)
+        self.hand_mode_btn.setStyleSheet(button_style)
+        
+        mode_btn_layout.addWidget(self.polygon_mode_btn)
+        mode_btn_layout.addWidget(self.hand_mode_btn)
+        mode_layout.addLayout(mode_btn_layout)
+        
+        layout.addWidget(mode_group)
         
         layout.addWidget(QLabel("画像リスト:"))
         self.image_list = QListWidget()
@@ -727,13 +1015,13 @@ class AnnotationWidget(QWidget):
         class_management_layout.addWidget(remove_class_btn)
         layout.addLayout(class_management_layout)
         
-        clear_btn = QPushButton("ポリゴンをクリア")
-        clear_btn.clicked.connect(self.canvas.clear_polygons)
-        layout.addWidget(clear_btn)
+        self.clear_btn = QPushButton("ポリゴンをクリア")
+        self.clear_btn.clicked.connect(self.canvas.clear_polygons)
+        layout.addWidget(self.clear_btn)
         
-        undo_btn = QPushButton("最後のポリゴンを削除")
-        undo_btn.clicked.connect(self.canvas.undo_last_polygon)
-        layout.addWidget(undo_btn)
+        self.undo_btn = QPushButton("最後のポリゴンを削除")
+        self.undo_btn.clicked.connect(self.canvas.undo_last_polygon)
+        layout.addWidget(self.undo_btn)
         
         save_btn = QPushButton("アノテーションを保存")
         save_btn.clicked.connect(self.save_annotations)
@@ -753,6 +1041,16 @@ class AnnotationWidget(QWidget):
             "【ラベル選択】\n"
             "• 1-9キー: 対応するラベルを選択\n"
             "• 0キー: 10番目のラベルを選択\n\n"
+            "【モード切り替え】\n"
+            "• Pキー: ポリゴン作成モード\n"
+            "• Hキー: ハンドモード\n\n"
+            "【ズーム\u30fb\u30d1\u30f3】\n"
+            "• ホイール: ズームイン/アウト\n"
+            "• 中ボタンドラッグ: 画像を移動\n"
+            "• スペース+ドラッグ: 画像を移動\n"
+            "• ハンドモード: 左ドラッグで移動\n"
+            "• Ctrl+0: フィット表示\n"
+            "• Ctrl++/-: ズームイン/アウト\n\n"
             "【画像ナビゲーション】\n"
             "• ←/→ キー: 前後の画像へ移動\n"
             "• ボタンクリック: 前後の画像へ\n\n"
@@ -888,6 +1186,9 @@ class AnnotationWidget(QWidget):
         image_path = item.data(Qt.ItemDataRole.UserRole)
         self.current_image_path = Path(image_path)
         self.canvas.load_image(image_path)
+        
+        # ズームコントロールをリセット
+        self.zoom_slider.setValue(100)
         
         # 既存のアノテーションを読み込む
         self.load_existing_annotations()
@@ -1159,14 +1460,21 @@ class AnnotationWidget(QWidget):
             # 右矢印キー: 次の画像へ
             self.go_to_next_image()
         elif event.key() >= Qt.Key.Key_1 and event.key() <= Qt.Key.Key_9:
-            # 数字キー1-9: ラベル選択
-            index = event.key() - Qt.Key.Key_1  # 0-8のインデックスに変換
-            if index < self.label_combo.count():
-                self.label_combo.setCurrentIndex(index)
+            # 数字キー1-9: ラベル選択（ポリゴンモードのみ）
+            if self.canvas.mode == CanvasMode.POLYGON:
+                index = event.key() - Qt.Key.Key_1  # 0-8のインデックスに変換
+                if index < self.label_combo.count():
+                    self.label_combo.setCurrentIndex(index)
         elif event.key() == Qt.Key.Key_0:
-            # 数字キー0: 10番目のラベル選択
-            if self.label_combo.count() >= 10:
+            # 数字キー0: 10番目のラベル選択（ポリゴンモードのみ）
+            if self.canvas.mode == CanvasMode.POLYGON and self.label_combo.count() >= 10:
                 self.label_combo.setCurrentIndex(9)
+        elif event.key() == Qt.Key.Key_H:
+            # Hキー: ハンドモード
+            self.canvas.set_mode(CanvasMode.HAND)
+        elif event.key() == Qt.Key.Key_P:
+            # Pキー: ポリゴンモード
+            self.canvas.set_mode(CanvasMode.POLYGON)
         else:
             # その他のキーはデフォルト処理
             super().keyPressEvent(event)
@@ -1265,3 +1573,63 @@ class AnnotationWidget(QWidget):
             
         except Exception as e:
             QMessageBox.critical(self, "エラー", f"クラス追加エラー: {str(e)}")
+    
+    def on_zoom_changed(self, zoom_percentage):
+        """ズームレベルが変更されたときの処理"""
+        self.zoom_label.setText(f"{int(zoom_percentage)}%")
+        
+        # スライダーを更新（valueChangedシグナルを一時的に無効化）
+        self.zoom_slider.blockSignals(True)
+        self.zoom_slider.setValue(int(zoom_percentage))
+        self.zoom_slider.blockSignals(False)
+    
+    def on_zoom_slider_changed(self, value):
+        """ズームスライダーが変更されたときの処理"""
+        self.canvas.set_zoom(value)
+    
+    def fit_image(self):
+        """画像をウィンドウにフィット"""
+        self.canvas.fit_image_to_widget()
+        self.canvas.update()
+    
+    def on_mode_changed(self, mode):
+        """モードが変更されたときの処理"""
+        if mode == CanvasMode.POLYGON:
+            self.mode_label.setText("ポリゴン作成モード")
+            self.mode_label.setStyleSheet("""
+                QLabel {
+                    font-size: 14px;
+                    font-weight: bold;
+                    padding: 8px;
+                    background-color: #3b82f6;
+                    color: white;
+                    border-radius: 5px;
+                }
+            """)
+            self.polygon_mode_btn.setChecked(True)
+            self.hand_mode_btn.setChecked(False)
+            
+            # ラベル選択やポリゴン操作ボタンを有効化
+            self.label_combo.setEnabled(True)
+            self.clear_btn.setEnabled(True)
+            self.undo_btn.setEnabled(True)
+            
+        else:  # CanvasMode.HAND
+            self.mode_label.setText("ハンドモード")
+            self.mode_label.setStyleSheet("""
+                QLabel {
+                    font-size: 14px;
+                    font-weight: bold;
+                    padding: 8px;
+                    background-color: #16a34a;
+                    color: white;
+                    border-radius: 5px;
+                }
+            """)
+            self.hand_mode_btn.setChecked(True)
+            self.polygon_mode_btn.setChecked(False)
+            
+            # ハンドモードではポリゴン操作を無効化
+            self.label_combo.setEnabled(False)
+            self.clear_btn.setEnabled(False)
+            self.undo_btn.setEnabled(False)
