@@ -92,6 +92,10 @@ class MainWindow(QMainWindow):
         help_action.triggered.connect(self.open_help)
         toolbar.addAction(help_action)
         
+        license_action = QAction("ライセンス", self)
+        license_action.triggered.connect(self.open_license)
+        toolbar.addAction(license_action)
+        
         return toolbar
     
     def setup_status_bar(self):
@@ -181,4 +185,9 @@ class MainWindow(QMainWindow):
     def open_help(self):
         from .help_dialog import HelpDialog
         dialog = HelpDialog(self)
+        dialog.exec()
+    
+    def open_license(self):
+        from .license_dialog import LicenseDialog
+        dialog = LicenseDialog(self)
         dialog.exec()

@@ -2,7 +2,8 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                                QListWidget, QComboBox, QLabel, QSlider,
                                QSplitter, QFileDialog, QListWidgetItem,
                                QMessageBox, QDialog, QInputDialog, QSizePolicy,
-                               QMenu, QDialogButtonBox, QLineEdit, QGroupBox)
+                               QMenu, QDialogButtonBox, QLineEdit, QGroupBox,
+                               QScrollArea)
 from PySide6.QtCore import Qt, Signal, QPointF, QTimer, QRectF
 from PySide6.QtGui import (QPainter, QPen, QColor, QPolygonF, QImage, QPixmap,
                           QCursor, QAction)
@@ -1027,40 +1028,72 @@ class AnnotationWidget(QWidget):
         save_btn.clicked.connect(self.save_annotations)
         layout.addWidget(save_btn)
         
+        # 操作方法をスクロール可能にする
         layout.addWidget(QLabel("操作方法:"))
+        
+        # スクロールエリアを作成
+        help_scroll = QScrollArea()
+        help_scroll.setWidgetResizable(True)
+        help_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        help_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        
+        # 操作説明の内容
         help_text = QLabel(
-            "【ポリゴン作成】\n"
-            "• 左クリック: 点を追加\n"
-            "• 最初の点をクリック/Enter: 確定\n"
-            "• Esc: 作成をキャンセル\n\n"
-            "【ポリゴン編集】\n"
-            "• 既存の点をドラッグ: 移動\n"
-            "• ポリゴンをクリック: 選択\n"
-            "• Delete/Backspace: 削除\n"
-            "• 右クリック: メニュー表示\n\n"
-            "【ラベル選択】\n"
-            "• 1-9キー: 対応するラベルを選択\n"
-            "• 0キー: 10番目のラベルを選択\n\n"
-            "【モード切り替え】\n"
-            "• Pキー: ポリゴン作成モード\n"
-            "• Hキー: ハンドモード\n\n"
-            "【ズーム\u30fb\u30d1\u30f3】\n"
-            "• ホイール: ズームイン/アウト\n"
-            "• 中ボタンドラッグ: 画像を移動\n"
-            "• スペース+ドラッグ: 画像を移動\n"
-            "• ハンドモード: 左ドラッグで移動\n"
-            "• Ctrl+0: フィット表示\n"
-            "• Ctrl++/-: ズームイン/アウト\n\n"
-            "【画像ナビゲーション】\n"
-            "• ←/→ キー: 前後の画像へ移動\n"
-            "• ボタンクリック: 前後の画像へ\n\n"
-            "【その他】\n"
-            "• Ctrl+Z: 元に戻す\n"
-            "• Ctrl+Y: やり直す"
+            """【ポリゴン作成】
+• 左クリック: 点を追加
+• 最初の点をクリック/Enter: 確定
+• Esc: 作成をキャンセル
+
+【ポリゴン編集】
+• 既存の点をドラッグ: 移動
+• ポリゴンをクリック: 選択
+• Delete/Backspace: 削除
+• 右クリック: メニュー表示
+
+【ラベル選択】
+• 1-9キー: 対応するラベルを選択
+• 0キー: 10番目のラベルを選択
+
+【モード切り替え】
+• Pキー: ポリゴン作成モード
+• Hキー: ハンドモード
+
+【ズーム・パン】
+• ホイール: ズームイン/アウト
+• 中ボタンドラッグ: 画像を移動
+• スペース+ドラッグ: 画像を移動
+• ハンドモード: 左ドラッグで移動
+• Ctrl+0: フィット表示
+• Ctrl++/-: ズームイン/アウト
+
+【画像ナビゲーション】
+• ←/→ キー: 前後の画像へ移動
+• ボタンクリック: 前後の画像へ
+
+【その他】
+• Ctrl+Z: 元に戻す
+• Ctrl+Y: やり直す"""
         )
         help_text.setWordWrap(True)
-        help_text.setStyleSheet("QLabel { background-color: #f0f0f0; padding: 5px; border-radius: 3px; }")
-        layout.addWidget(help_text)
+        help_text.setStyleSheet("QLabel { background-color: #f0f0f0; padding: 10px; border-radius: 3px; }")
+        
+        # スクロールエリアに設定
+        help_scroll.setWidget(help_text)
+        help_scroll.setStyleSheet("""
+            QScrollArea {
+                background-color: #f0f0f0;
+                border: 1px solid #ddd;
+                border-radius: 3px;
+            }
+            QScrollBar:vertical {
+                width: 12px;
+            }
+        """)
+        
+        # 最大高さを設定してコンパクトに
+        help_scroll.setMaximumHeight(300)
+        
+        layout.addWidget(help_scroll)
         
         layout.addStretch()
         return widget
