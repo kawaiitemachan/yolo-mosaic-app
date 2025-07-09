@@ -1,6 +1,47 @@
 import cv2
 import numpy as np
 
+def expand_bbox(x1, y1, x2, y2, expansion_percent, image_width, image_height):
+    """
+    バウンディングボックスを指定された割合で拡張する
+    
+    Args:
+        x1, y1, x2, y2: バウンディングボックスの座標
+        expansion_percent: 拡張率（%）
+        image_width: 画像の幅
+        image_height: 画像の高さ
+    
+    Returns:
+        拡張されたバウンディングボックスの座標 (x1, y1, x2, y2)
+    """
+    if expansion_percent <= 0:
+        return x1, y1, x2, y2
+    
+    # ボックスの中心と現在のサイズを計算
+    center_x = (x1 + x2) / 2
+    center_y = (y1 + y2) / 2
+    width = x2 - x1
+    height = y2 - y1
+    
+    # 拡張率を適用
+    expansion_factor = 1 + (expansion_percent / 100)
+    new_width = width * expansion_factor
+    new_height = height * expansion_factor
+    
+    # 新しい座標を計算
+    new_x1 = int(center_x - new_width / 2)
+    new_y1 = int(center_y - new_height / 2)
+    new_x2 = int(center_x + new_width / 2)
+    new_y2 = int(center_y + new_height / 2)
+    
+    # 画像の境界内に制限
+    new_x1 = max(0, new_x1)
+    new_y1 = max(0, new_y1)
+    new_x2 = min(image_width, new_x2)
+    new_y2 = min(image_height, new_y2)
+    
+    return new_x1, new_y1, new_x2, new_y2
+
 def expand_mask(mask, expansion_percent):
     """
     マスクを指定された割合で拡張する
@@ -229,9 +270,16 @@ def batch_process_images(image_paths, model_path, output_dir,
                     conf = float(r.boxes.conf[i])
                     label = model.names[cls]
                     
+                    # バウンディングボックスを拡張
+                    x1, y1, x2, y2 = map(int, box)
+                    x1, y1, x2, y2 = expand_bbox(
+                        x1, y1, x2, y2, 
+                        mask_expansion,
+                        image.shape[1], image.shape[0]
+                    )
+                    
                     # バウンディングボックスからマスクを作成
                     mask = np.zeros((image.shape[0], image.shape[1]), dtype=bool)
-                    x1, y1, x2, y2 = map(int, box)
                     mask[y1:y2, x1:x2] = True
                     
                     detections.append({
