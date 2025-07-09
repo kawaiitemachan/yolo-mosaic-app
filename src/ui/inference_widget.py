@@ -18,7 +18,7 @@ class InferenceThread(QThread):
     progress_update = Signal(int, int, str)  # 現在の番号, 総数, ファイル名
     error = Signal(str)
     
-    def __init__(self, model_path, image_paths, confidence, blur_type, strength, output_dir=None, mask_expansion=2, selected_classes=None):
+    def __init__(self, model_path, image_paths, confidence, blur_type, strength, output_dir=None, mask_expansion=2, selected_classes=None, use_bbox=False):
         super().__init__()
         self.model_path = model_path
         self.image_paths = image_paths if isinstance(image_paths, list) else [image_paths]
@@ -29,6 +29,7 @@ class InferenceThread(QThread):
         self.output_dir = output_dir
         self.mask_expansion = mask_expansion
         self.selected_classes = selected_classes if selected_classes is not None else set()
+        self.use_bbox = use_bbox
         
     def run(self):
         try:
@@ -65,7 +66,30 @@ class InferenceThread(QThread):
                 # 検出結果を処理
                 detections = []
                 for r in results:
-                    if r.masks is not None:
+                    if self.use_bbox and r.boxes is not None:
+                        # バウンディングボックスモード
+                        for i, box in enumerate(r.boxes.xyxy):
+                            cls = int(r.boxes.cls[i])
+                            
+                            # 選択されたクラスのみを処理
+                            if self.selected_classes and cls not in self.selected_classes:
+                                continue
+                            
+                            # バウンディングボックスからマスクを作成
+                            mask = np.zeros((image.shape[0], image.shape[1]), dtype=bool)
+                            x1, y1, x2, y2 = map(int, box)
+                            mask[y1:y2, x1:x2] = True
+                            
+                            conf = float(r.boxes.conf[i])
+                            label = model.names[cls]
+                            
+                            detections.append({
+                                'mask': mask,
+                                'label': label,
+                                'confidence': conf
+                            })
+                    elif not self.use_bbox and r.masks is not None:
+                        # セグメンテーションモード（従来の処理）
                         for i, mask in enumerate(r.masks.data):
                             cls = int(r.boxes.cls[i])
                             
@@ -362,6 +386,13 @@ class InferenceWidget(QWidget):
         self.preserve_png_check.stateChanged.connect(self.save_settings)
         layout.addWidget(self.preserve_png_check)
         
+        # バウンディングボックスモード
+        self.use_bbox_check = QCheckBox("バウンディングボックスで処理")
+        self.use_bbox_check.setChecked(False)
+        self.use_bbox_check.setToolTip("セグメンテーションマスクの代わりにバウンディングボックスを使用")
+        self.use_bbox_check.stateChanged.connect(self.on_bbox_mode_changed)
+        layout.addWidget(self.use_bbox_check)
+        
         # マスク拡張率設定
         mask_expand_layout = QHBoxLayout()
         mask_expand_layout.addWidget(QLabel("マスク拡張率 (%):"))
@@ -628,7 +659,8 @@ class InferenceWidget(QWidget):
                 strength,
                 output_folder,
                 self.mask_expand_spin.value(),
-                self.selected_classes
+                self.selected_classes,
+                self.use_bbox_check.isChecked()
             )
         
         # 単一画像モード
@@ -651,7 +683,8 @@ class InferenceWidget(QWidget):
                 strength,
                 output_folder,  # 単一画像でも出力フォルダを使用
                 self.mask_expand_spin.value(),
-                self.selected_classes
+                self.selected_classes,
+                self.use_bbox_check.isChecked()
             )
         
         else:
@@ -768,6 +801,12 @@ class InferenceWidget(QWidget):
         self.blur_strength_label.setText(str(value))
         self.save_settings()
     
+    def on_bbox_mode_changed(self, state):
+        """バウンディングボックスモードの切り替え"""
+        # マスク拡張率の有効/無効を切り替え
+        self.mask_expand_spin.setEnabled(not self.use_bbox_check.isChecked())
+        self.save_settings()
+    
     def save_settings(self):
         """設定を保存"""
         self.settings.setValue("confidence", self.conf_spin.value())
@@ -778,6 +817,7 @@ class InferenceWidget(QWidget):
         self.settings.setValue("parallel_count", self.parallel_spin.value())
         self.settings.setValue("output_folder", self.output_path_edit.text())
         self.settings.setValue("mask_expansion", self.mask_expand_spin.value())
+        self.settings.setValue("use_bbox", self.use_bbox_check.isChecked())
         
         # 選択されたクラスを保存（モデルごとに保存）
         if self.model_combo.currentData():
@@ -821,6 +861,12 @@ class InferenceWidget(QWidget):
         # マスク拡張率
         mask_expansion = self.settings.value("mask_expansion", 2, type=int)
         self.mask_expand_spin.setValue(mask_expansion)
+        
+        # バウンディングボックスモード
+        use_bbox = self.settings.value("use_bbox", False, type=bool)
+        self.use_bbox_check.setChecked(use_bbox)
+        # マスク拡張率の有効/無効を設定
+        self.mask_expand_spin.setEnabled(not use_bbox)
     
     def restore_class_selection(self):
         """保存されたクラス選択状態を復元"""

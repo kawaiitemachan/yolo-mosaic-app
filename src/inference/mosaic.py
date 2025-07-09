@@ -189,7 +189,7 @@ def apply_tile_mosaic(image, mask, tile_size):
 def batch_process_images(image_paths, model_path, output_dir, 
                         confidence=0.25, iou=0.45, 
                         blur_type='gaussian', strength=15,
-                        preserve_png_info=False, mask_expansion=0):
+                        preserve_png_info=False, mask_expansion=0, use_bbox=False):
     """
     複数の画像をバッチ処理
     """
@@ -222,7 +222,25 @@ def batch_process_images(image_paths, model_path, output_dir,
         
         detections = []
         for r in predictions:
-            if r.masks is not None:
+            if use_bbox and r.boxes is not None:
+                # バウンディングボックスモード
+                for i, box in enumerate(r.boxes.xyxy):
+                    cls = int(r.boxes.cls[i])
+                    conf = float(r.boxes.conf[i])
+                    label = model.names[cls]
+                    
+                    # バウンディングボックスからマスクを作成
+                    mask = np.zeros((image.shape[0], image.shape[1]), dtype=bool)
+                    x1, y1, x2, y2 = map(int, box)
+                    mask[y1:y2, x1:x2] = True
+                    
+                    detections.append({
+                        'mask': mask,
+                        'label': label,
+                        'confidence': conf
+                    })
+            elif not use_bbox and r.masks is not None:
+                # セグメンテーションモード
                 for i, mask in enumerate(r.masks.data):
                     mask_np = mask.cpu().numpy()
                     mask_resized = cv2.resize(mask_np, (image.shape[1], image.shape[0]))
