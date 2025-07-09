@@ -120,8 +120,25 @@ def save_yolo_segmentation_to_dataset(image_path, polygons, img_width, img_heigh
     dst_image_dir.mkdir(parents=True, exist_ok=True)
     dst_image_path = dst_image_dir / image_path.name
     
-    if not dst_image_path.exists():
-        shutil.copy2(image_path, dst_image_path)
+    # 他のsplitに同じ画像が存在するかチェック
+    other_splits = ["train", "valid", "test"]
+    other_splits.remove(split)
+    
+    for other_split in other_splits:
+        other_image_path = dataset_path / other_split / "images" / image_path.name
+        other_label_path = dataset_path / other_split / "labels" / f"{image_path.stem}.txt"
+        
+        if other_image_path.exists():
+            # 他のsplitから画像を移動
+            shutil.move(str(other_image_path), str(dst_image_path))
+            # 対応するラベルファイルも削除
+            if other_label_path.exists():
+                other_label_path.unlink()
+            break
+    else:
+        # どのsplitにも存在しない場合のみコピー
+        if not dst_image_path.exists():
+            shutil.copy2(image_path, dst_image_path)
     
     # ラベルを保存
     dst_label_dir = dataset_path / split / "labels"
