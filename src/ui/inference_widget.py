@@ -4,7 +4,7 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                                QGroupBox, QDoubleSpinBox, QCheckBox, QSpinBox,
                                QLineEdit, QMessageBox, QProgressBar, QScrollArea,
                                QRadioButton)
-from PySide6.QtCore import Qt, QThread, Signal, QSettings
+from PySide6.QtCore import Qt, QThread, Signal, QSettings, QEvent, QObject
 from PySide6.QtGui import QImage, QPixmap, QPainter
 import cv2
 import numpy as np
@@ -12,6 +12,15 @@ from pathlib import Path
 
 from ..config import MODELS_DIR, DEFAULT_CONFIG
 from ..utils.device_utils import get_device
+
+class WheelEventFilter(QObject):
+    """マウスホイールイベントを無効化するイベントフィルター"""
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Type.Wheel:
+            # スピンボックス、コンボボックス、スライダーのホイールイベントを無効化
+            if isinstance(obj, (QSpinBox, QDoubleSpinBox, QComboBox, QSlider)):
+                return True
+        return super().eventFilter(obj, event)
 
 def expand_bbox(x1, y1, x2, y2, expansion_percent, image_width, image_height):
     """
@@ -57,7 +66,7 @@ def expand_bbox(x1, y1, x2, y2, expansion_percent, image_width, image_height):
 class OutputConfig:
     """出力設定を保持するクラス"""
     def __init__(self):
-        self.output_path = ""
+        # 出力パスは削除（共通の出力フォルダを使用）
         self.enabled = True
         self.blur_type = "gaussian"
         self.blur_strength = 15
@@ -69,7 +78,7 @@ class OutputConfig:
     def to_dict(self):
         """設定を辞書形式に変換"""
         return {
-            "output_path": self.output_path,
+            # output_pathは削除
             "enabled": self.enabled,
             "blur_type": self.blur_type,
             "blur_strength": self.blur_strength,
@@ -81,7 +90,7 @@ class OutputConfig:
     
     def from_dict(self, data):
         """辞書から設定を復元"""
-        self.output_path = data.get("output_path", "")
+        # output_pathは削除
         self.enabled = data.get("enabled", True)
         self.blur_type = data.get("blur_type", "gaussian")
         self.blur_strength = data.get("blur_strength", 15)
@@ -109,6 +118,7 @@ class InferenceThread(QThread):
         self.confidence = confidence
         self.iou = 0.9  # 固定値：検出の重複を最小限に抑える
         self.selected_classes = selected_classes if selected_classes is not None else set()
+        self.output_dir = output_dir  # output_dirを保存
         
         # 複数出力モード（output_configsが指定された場合）
         if output_configs is not None:
@@ -219,10 +229,11 @@ class InferenceThread(QThread):
                                 })
                     
                     # 出力ディレクトリが指定されている場合
-                    if config.output_path:
-                        # サブフォルダを作成
-                        detected_dir = Path(config.output_path) / "検出あり"
-                        undetected_dir = Path(config.output_path) / "未検出"
+                    if self.output_dir:
+                        # 設定名に基づいたサブフォルダを作成
+                        config_dir = Path(self.output_dir) / config.name
+                        detected_dir = config_dir / "検出あり"
+                        undetected_dir = config_dir / "未検出"
                         detected_dir.mkdir(parents=True, exist_ok=True)
                         undetected_dir.mkdir(parents=True, exist_ok=True)
                         
@@ -341,10 +352,11 @@ class OutputConfigWidget(QGroupBox):
     
     removed = Signal()  # 削除シグナル
     
-    def __init__(self, config=None, index=0):
+    def __init__(self, config=None, index=0, wheel_filter=None):
         super().__init__()
         self.config = config if config else OutputConfig()
         self.index = index
+        self.wheel_filter = wheel_filter
         self.init_ui()
         self.update_ui_from_config()
         
@@ -367,17 +379,7 @@ class OutputConfigWidget(QGroupBox):
         name_layout.addWidget(self.name_edit)
         layout.addLayout(name_layout)
         
-        # 出力先フォルダ
-        folder_layout = QHBoxLayout()
-        folder_layout.addWidget(QLabel("出力先:"))
-        self.path_edit = QLineEdit()
-        self.path_edit.setReadOnly(True)
-        self.path_edit.setPlaceholderText("フォルダを選択...")
-        folder_layout.addWidget(self.path_edit)
-        self.browse_btn = QPushButton("参照...")
-        self.browse_btn.clicked.connect(self.browse_folder)
-        folder_layout.addWidget(self.browse_btn)
-        layout.addLayout(folder_layout)
+        # 出力先フォルダはUIから削除（共通の出力フォルダを使用）
         
         # モザイク設定
         mosaic_layout = QHBoxLayout()
@@ -436,19 +438,21 @@ class OutputConfigWidget(QGroupBox):
         # 初期状態の更新
         self.update_tile_size_visibility()
         
-    def browse_folder(self):
-        folder = QFileDialog.getExistingDirectory(self, "出力先フォルダを選択")
-        if folder:
-            self.path_edit.setText(folder)
-            self.config.output_path = folder
+        # マウスホイールイベントフィルターを適用
+        if self.wheel_filter:
+            self.blur_type_combo.installEventFilter(self.wheel_filter)
+            self.blur_strength_slider.installEventFilter(self.wheel_filter)
+            self.tile_size_spin.installEventFilter(self.wheel_filter)
+            self.mask_expand_spin.installEventFilter(self.wheel_filter)
+        
+    # browse_folderメソッドは削除（共通出力フォルダを使用）
             
     def on_enabled_changed(self, state):
         self.config.enabled = state == Qt.CheckState.Checked.value
         # 無効時はウィジェットを灰色表示
         enabled = self.config.enabled
         self.name_edit.setEnabled(enabled)
-        self.path_edit.setEnabled(enabled)
-        self.browse_btn.setEnabled(enabled)
+        # path_editとbrowse_btnは削除
         self.blur_type_combo.setEnabled(enabled)
         self.blur_strength_slider.setEnabled(enabled)
         self.tile_size_spin.setEnabled(enabled and self.config.blur_type == 'tile')
@@ -488,11 +492,15 @@ class OutputConfigWidget(QGroupBox):
         self.blur_strength_slider.setVisible(not is_tile)
         self.blur_strength_label.setVisible(not is_tile)
         
+        # タイルサイズスピンボックスの有効/無効状態も更新
+        if self.config.enabled:
+            self.tile_size_spin.setEnabled(is_tile)
+        
     def update_ui_from_config(self):
         """設定からUIを更新"""
         self.enabled_check.setChecked(self.config.enabled)
         self.name_edit.setText(self.config.name)
-        self.path_edit.setText(self.config.output_path)
+        # path_editは削除
         self.blur_type_combo.setCurrentText(self.config.blur_type)
         self.blur_strength_slider.setValue(self.config.blur_strength)
         self.tile_size_spin.setValue(self.config.tile_size)
@@ -517,6 +525,9 @@ class InferenceWidget(QWidget):
         self.folder_path = None
         self.image_files = []
         self.processed_image = None
+        
+        # マウスホイールイベントフィルターを作成
+        self.wheel_filter = WheelEventFilter()
         self.class_checkboxes = {}  # クラス名とチェックボックスの対応
         self.model_classes = {}  # モデルのクラス情報
         self.selected_classes = set()  # 選択されたクラスID
@@ -607,6 +618,18 @@ class InferenceWidget(QWidget):
         self.multi_output_group = QGroupBox("複数出力設定")
         multi_output_layout = QVBoxLayout(self.multi_output_group)
         
+        # 共通出力フォルダ選択
+        common_folder_layout = QHBoxLayout()
+        common_folder_layout.addWidget(QLabel("出力先フォルダ:"))
+        self.multi_output_path_edit = QLineEdit()
+        self.multi_output_path_edit.setPlaceholderText("共通出力先フォルダを選択...")
+        self.multi_output_path_edit.setReadOnly(True)
+        common_folder_layout.addWidget(self.multi_output_path_edit)
+        self.multi_browse_output_btn = QPushButton("参照...")
+        self.multi_browse_output_btn.clicked.connect(self.browse_multi_output_folder)
+        common_folder_layout.addWidget(self.multi_browse_output_btn)
+        multi_output_layout.addLayout(common_folder_layout)
+        
         # 出力設定追加ボタン
         add_output_btn = QPushButton("+ 出力設定を追加")
         add_output_btn.clicked.connect(self.add_output_config)
@@ -682,6 +705,9 @@ class InferenceWidget(QWidget):
         # 最初のモデルのクラスリストを更新（UIが全て作成された後）
         if self.model_combo.count() > 0:
             self.on_model_changed(0)
+        
+        # マウスホイールイベントフィルターを各ウィジェットに適用
+        self.apply_wheel_filter()
             
         return widget
     
@@ -724,6 +750,7 @@ class InferenceWidget(QWidget):
         self.blur_type_combo = QComboBox()
         self.blur_type_combo.addItems(["gaussian", "pixelate", "blur", "black", "white", "tile"])
         self.blur_type_combo.currentTextChanged.connect(self.save_settings)
+        self.blur_type_combo.currentTextChanged.connect(self.on_main_blur_type_changed)
         blur_type_layout.addWidget(self.blur_type_combo)
         layout.addLayout(blur_type_layout)
         
@@ -739,13 +766,18 @@ class InferenceWidget(QWidget):
         layout.addLayout(blur_strength_layout)
         
         tile_size_layout = QHBoxLayout()
-        tile_size_layout.addWidget(QLabel("タイルサイズ (ピクセル):"))
+        self.tile_size_label = QLabel("タイルサイズ (ピクセル):")
+        tile_size_layout.addWidget(self.tile_size_label)
         self.tile_size_spin = QSpinBox()
         self.tile_size_spin.setRange(1, 100)
         self.tile_size_spin.setValue(10)
         self.tile_size_spin.valueChanged.connect(self.save_settings)
         tile_size_layout.addWidget(self.tile_size_spin)
         layout.addLayout(tile_size_layout)
+        
+        # 初期状態でタイルサイズを非表示
+        self.tile_size_label.setVisible(False)
+        self.tile_size_spin.setVisible(False)
         
         self.preserve_png_check = QCheckBox("PNGメタデータを保持")
         self.preserve_png_check.setChecked(True)
@@ -969,6 +1001,13 @@ class InferenceWidget(QWidget):
             self.output_path_edit.setText(folder)
             self.save_settings()
     
+    def browse_multi_output_folder(self):
+        """複数出力モード用の共通出力フォルダを選択"""
+        folder = QFileDialog.getExistingDirectory(self, "共通出力先フォルダを選択")
+        if folder:
+            self.multi_output_path_edit.setText(folder)
+            self.save_settings()
+    
     def on_output_mode_changed(self):
         """出力モードが変更されたときの処理"""
         self.multi_output_mode = self.multi_output_radio.isChecked()
@@ -1001,7 +1040,7 @@ class InferenceWidget(QWidget):
         self.output_configs.append(config)
         
         # UIウィジェットを作成
-        widget = OutputConfigWidget(config, len(self.output_configs) - 1)
+        widget = OutputConfigWidget(config, len(self.output_configs) - 1, self.wheel_filter)
         widget.removed.connect(lambda: self.remove_output_config(widget))
         
         # レイアウトに追加（ストレッチの前に挿入）
@@ -1073,10 +1112,17 @@ class InferenceWidget(QWidget):
             if self.multi_output_mode:
                 # 複数出力モード
                 # 有効な出力設定があるかチェック
-                valid_configs = [config for config in self.output_configs if config.enabled and config.output_path]
+                valid_configs = [config for config in self.output_configs if config.enabled]
                 if not valid_configs:
                     from PySide6.QtWidgets import QMessageBox
-                    QMessageBox.warning(self, "警告", "有効な出力設定がありません。出力先を設定してください")
+                    QMessageBox.warning(self, "警告", "有効な出力設定がありません")
+                    return
+                
+                # 共通出力フォルダを確認
+                output_folder = self.multi_output_path_edit.text()
+                if not output_folder:
+                    from PySide6.QtWidgets import QMessageBox
+                    QMessageBox.warning(self, "警告", "共通出力先フォルダを指定してください")
                     return
                 
                 self.inference_btn.setEnabled(False)
@@ -1085,7 +1131,8 @@ class InferenceWidget(QWidget):
                     self.image_files,
                     self.conf_spin.value(),
                     selected_classes=self.selected_classes,
-                    output_configs=valid_configs
+                    output_configs=valid_configs,
+                    output_dir=output_folder
                 )
             else:
                 # 単一出力モード（従来の処理）
@@ -1119,10 +1166,17 @@ class InferenceWidget(QWidget):
             if self.multi_output_mode:
                 # 複数出力モード
                 # 有効な出力設定があるかチェック
-                valid_configs = [config for config in self.output_configs if config.enabled and config.output_path]
+                valid_configs = [config for config in self.output_configs if config.enabled]
                 if not valid_configs:
                     from PySide6.QtWidgets import QMessageBox
-                    QMessageBox.warning(self, "警告", "有効な出力設定がありません。出力先を設定してください")
+                    QMessageBox.warning(self, "警告", "有効な出力設定がありません")
+                    return
+                
+                # 共通出力フォルダを確認
+                output_folder = self.multi_output_path_edit.text()
+                if not output_folder:
+                    from PySide6.QtWidgets import QMessageBox
+                    QMessageBox.warning(self, "警告", "共通出力先フォルダを指定してください")
                     return
                 
                 self.inference_btn.setEnabled(False)
@@ -1131,7 +1185,8 @@ class InferenceWidget(QWidget):
                     str(self.current_image_path),
                     self.conf_spin.value(),
                     selected_classes=self.selected_classes,
-                    output_configs=valid_configs
+                    output_configs=valid_configs,
+                    output_dir=output_folder
                 )
             else:
                 # 単一出力モード（従来の処理）
@@ -1278,6 +1333,14 @@ class InferenceWidget(QWidget):
             self.mask_expand_spin.setToolTip("検出されたマスクを拡張する割合")
         self.save_settings()
     
+    def on_main_blur_type_changed(self, text):
+        """メインウィジェットのモザイクタイプ変更時の処理"""
+        is_tile = text == 'tile'
+        self.tile_size_label.setVisible(is_tile)
+        self.tile_size_spin.setVisible(is_tile)
+        self.blur_strength_slider.setVisible(not is_tile)
+        self.blur_strength_label.setVisible(not is_tile)
+    
     def save_settings(self):
         """設定を保存"""
         self.settings.setValue("confidence", self.conf_spin.value())
@@ -1298,6 +1361,7 @@ class InferenceWidget(QWidget):
         
         # 複数出力モード設定を保存
         self.settings.setValue("multi_output_mode", self.multi_output_mode)
+        self.settings.setValue("multi_output_folder", self.multi_output_path_edit.text())
         
         # 複数出力設定を保存
         output_configs_data = []
@@ -1316,6 +1380,9 @@ class InferenceWidget(QWidget):
         index = self.blur_type_combo.findText(blur_type)
         if index >= 0:
             self.blur_type_combo.setCurrentIndex(index)
+        
+        # タイルサイズの表示/非表示を更新
+        self.on_main_blur_type_changed(blur_type)
         
         # モザイク強度
         blur_strength = self.settings.value("blur_strength", DEFAULT_CONFIG["inference"]["blur_strength"], type=int)
@@ -1358,6 +1425,10 @@ class InferenceWidget(QWidget):
         else:
             self.single_output_radio.setChecked(True)
         
+        # 複数出力モードの共通出力フォルダを読み込み
+        multi_output_folder = self.settings.value("multi_output_folder", "")
+        self.multi_output_path_edit.setText(multi_output_folder)
+        
         # 複数出力設定を読み込み
         output_configs_data = self.settings.value("output_configs", [])
         if output_configs_data:
@@ -1367,13 +1438,35 @@ class InferenceWidget(QWidget):
                 self.output_configs.append(config)
                 
                 # UIウィジェットを作成
-                widget = OutputConfigWidget(config, len(self.output_configs) - 1)
+                widget = OutputConfigWidget(config, len(self.output_configs) - 1, self.wheel_filter)
                 widget.removed.connect(lambda w=widget: self.remove_output_config(w))
                 
                 # レイアウトに追加
                 count = self.output_list_layout.count()
                 self.output_list_layout.insertWidget(count - 1, widget)
                 self.output_config_widgets.append(widget)
+    
+    def apply_wheel_filter(self):
+        """すべてのスピンボックス、コンボボックス、スライダーにマウスホイールフィルターを適用"""
+        # メインUIのウィジェット
+        self.conf_spin.installEventFilter(self.wheel_filter)
+        self.model_combo.installEventFilter(self.wheel_filter)
+        self.blur_type_combo.installEventFilter(self.wheel_filter)
+        self.blur_strength_slider.installEventFilter(self.wheel_filter)
+        self.tile_size_spin.installEventFilter(self.wheel_filter)
+        self.mask_expand_spin.installEventFilter(self.wheel_filter)
+        self.parallel_spin.installEventFilter(self.wheel_filter)
+        
+        # 複数出力設定のウィジェットにも適用
+        for widget in self.output_config_widgets:
+            if hasattr(widget, 'blur_type_combo'):
+                widget.blur_type_combo.installEventFilter(self.wheel_filter)
+            if hasattr(widget, 'blur_strength_slider'):
+                widget.blur_strength_slider.installEventFilter(self.wheel_filter)
+            if hasattr(widget, 'tile_size_spin'):
+                widget.tile_size_spin.installEventFilter(self.wheel_filter)
+            if hasattr(widget, 'mask_expand_spin'):
+                widget.mask_expand_spin.installEventFilter(self.wheel_filter)
     
     def restore_class_selection(self):
         """保存されたクラス選択状態を復元"""
@@ -1393,3 +1486,5 @@ class InferenceWidget(QWidget):
             self.selected_classes = set(self.model_classes.keys())
             for checkbox in self.class_checkboxes.values():
                 checkbox.setChecked(True)
+            # 初回起動時の全選択状態を保存
+            self.save_settings()
