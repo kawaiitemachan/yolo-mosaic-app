@@ -129,7 +129,7 @@ class InferenceThread(QThread):
             self.output_configs = []
             if output_dir:
                 config = OutputConfig()
-                config.output_path = output_dir
+                # output_pathは設定しない（self.output_dirを使用）
                 config.blur_type = blur_type
                 config.blur_strength = strength
                 config.tile_size = strength if blur_type == 'tile' else 10
@@ -302,17 +302,24 @@ class InferenceThread(QThread):
             self.progress.emit("全ての処理が完了しました")
             
             # 処理結果のサマリーを出力
-            for config in self.output_configs:
-                if config.enabled and config.output_path:
-                    detected_dir = Path(config.output_path) / "検出あり"
-                    undetected_dir = Path(config.output_path) / "未検出"
+            if self.output_dir:
+                if self.multi_output_mode:
+                    # 複数出力モード
+                    for config in self.output_configs:
+                        if config.enabled:
+                            config_dir = Path(self.output_dir) / config.name
+                            detected_dir = config_dir / "検出あり"
+                            undetected_dir = config_dir / "未検出"
+                            detected_count = len(list(detected_dir.glob("*.*"))) if detected_dir.exists() else 0
+                            undetected_count = len(list(undetected_dir.glob("*.*"))) if undetected_dir.exists() else 0
+                            self.progress.emit(f"[{config.name}] 処理完了: 検出あり {detected_count}枚, 未検出 {undetected_count}枚")
+                else:
+                    # 単一出力モード
+                    detected_dir = Path(self.output_dir) / "検出あり"
+                    undetected_dir = Path(self.output_dir) / "未検出"
                     detected_count = len(list(detected_dir.glob("*.*"))) if detected_dir.exists() else 0
                     undetected_count = len(list(undetected_dir.glob("*.*"))) if undetected_dir.exists() else 0
-                    
-                    if self.multi_output_mode:
-                        self.progress.emit(f"[{config.name}] 処理完了: 検出あり {detected_count}枚, 未検出 {undetected_count}枚")
-                    else:
-                        self.progress.emit(f"処理完了: 検出あり {detected_count}枚, 未検出 {undetected_count}枚")
+                    self.progress.emit(f"処理完了: 検出あり {detected_count}枚, 未検出 {undetected_count}枚")
             
         except Exception as e:
             self.error.emit(f"エラー: {str(e)}")
@@ -363,6 +370,12 @@ class OutputConfigWidget(QGroupBox):
     def init_ui(self):
         self.setTitle(f"出力設定 {self.index + 1}")
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 15, 10, 15)
+        layout.setSpacing(8)
+        
+        # サイズポリシーを設定
+        from PySide6.QtWidgets import QSizePolicy
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
         
         # 有効/無効チェックボックス
         self.enabled_check = QCheckBox("この出力を有効にする")
@@ -570,12 +583,24 @@ class InferenceWidget(QWidget):
         mosaic_group = self.create_mosaic_group()
         layout.addWidget(mosaic_group)
         
-        self.load_image_btn = QPushButton("画像を選択")
-        self.load_image_btn.clicked.connect(self.load_image)
-        layout.addWidget(self.load_image_btn)
-        
-        self.load_folder_btn = QPushButton("フォルダを選択")
+        self.load_folder_btn = QPushButton("処理対象フォルダを選択")
         self.load_folder_btn.clicked.connect(self.load_folder)
+        # ボタンを目立たせるためのスタイル設定
+        self.load_folder_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                font-weight: bold;
+                padding: 8px;
+                border-radius: 4px;
+            }
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+            QPushButton:pressed {
+                background-color: #3d8b40;
+            }
+        """)
         layout.addWidget(self.load_folder_btn)
         
         self.file_list = QListWidget()
@@ -638,10 +663,12 @@ class InferenceWidget(QWidget):
         # 出力設定リストのスクロールエリア
         self.output_scroll = QScrollArea()
         self.output_scroll.setWidgetResizable(True)
-        self.output_scroll.setMinimumHeight(200)
+        self.output_scroll.setMinimumHeight(400)
         
         self.output_list_widget = QWidget()
         self.output_list_layout = QVBoxLayout(self.output_list_widget)
+        self.output_list_layout.setContentsMargins(5, 5, 5, 5)
+        self.output_list_layout.setSpacing(10)
         self.output_list_layout.addStretch()
         
         self.output_scroll.setWidget(self.output_list_widget)
@@ -954,17 +981,9 @@ class InferenceWidget(QWidget):
         if self.model_combo.count() > 0 and hasattr(self, 'class_layout'):
             self.on_model_changed(0)
     
-    def load_image(self):
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, "画像を選択", "", "Image Files (*.jpg *.jpeg *.png)"
-        )
-        if file_path:
-            self.folder_mode = False  # 単一画像モードに切り替え
-            self.image_files = []
-            self.load_and_display_image(file_path)
     
     def load_folder(self):
-        folder = QFileDialog.getExistingDirectory(self, "フォルダを選択")
+        folder = QFileDialog.getExistingDirectory(self, "処理対象フォルダを選択")
         if folder:
             self.file_list.clear()
             self.folder_path = Path(folder)
@@ -985,7 +1004,7 @@ class InferenceWidget(QWidget):
                 from PySide6.QtWidgets import QMessageBox
                 QMessageBox.information(
                     self, 
-                    "フォルダ選択", 
+                    "処理対象フォルダ選択", 
                     f"{len(self.image_files)} 枚の画像が見つかりました\n"
                     f"推論実行ボタンで全ての画像を処理します"
                 )
@@ -1048,6 +1067,11 @@ class InferenceWidget(QWidget):
         self.output_list_layout.insertWidget(count - 1, widget)
         
         self.output_config_widgets.append(widget)
+        
+        # レイアウトを更新してスクロールエリアのサイズを再計算
+        self.output_list_widget.adjustSize()
+        self.output_scroll.updateGeometry()
+        
         self.save_settings()
         
     def remove_output_config(self, widget):
@@ -1070,6 +1094,10 @@ class InferenceWidget(QWidget):
                 if not w.config.name or w.config.name.startswith("出力設定"):
                     w.config.name = f"出力設定 {i + 1}"
                     w.setTitle(w.config.name)
+            
+            # レイアウトを更新
+            self.output_list_widget.adjustSize()
+            self.output_scroll.updateGeometry()
             
             self.save_settings()
     
@@ -1312,7 +1340,6 @@ class InferenceWidget(QWidget):
         """処理中のUI制御"""
         self.inference_btn.setEnabled(enabled)
         self.model_combo.setEnabled(enabled)
-        self.load_image_btn.setEnabled(enabled)
         self.load_folder_btn.setEnabled(enabled)
         self.browse_output_btn.setEnabled(enabled)
         self.file_list.setEnabled(enabled)
