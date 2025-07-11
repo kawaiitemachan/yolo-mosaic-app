@@ -1168,7 +1168,7 @@ class AnnotationWidget(QWidget):
             yaml_path = self.dataset_path / "data.yaml"
             if yaml_path.exists():
                 try:
-                    with open(yaml_path, 'r') as f:
+                    with open(yaml_path, 'r', encoding='utf-8') as f:
                         data = yaml.safe_load(f)
                     classes = data.get('names', [])
                     
@@ -1179,8 +1179,15 @@ class AnnotationWidget(QWidget):
                     
                     # ラベルコンボボックスを更新
                     self.update_label_combo(classes)
-                except:
-                    pass
+                except yaml.YAMLError as e:
+                    info_text += f"クラス: エラー (YAML読み込みエラー)"
+                    print(f"data.yaml YAMLエラー: {e}")
+                except IOError as e:
+                    info_text += f"クラス: エラー (ファイル読み込みエラー)"
+                    print(f"data.yaml ファイルエラー: {e}")
+                except Exception as e:
+                    info_text += f"クラス: エラー (予期しないエラー)"
+                    print(f"data.yaml読み込みエラー: {type(e).__name__}: {e}")
             
             self.dataset_info_label.setText(info_text)
     
@@ -1293,14 +1300,18 @@ class AnnotationWidget(QWidget):
         
         try:
             # 既存のdata.yamlを読み込む
-            with open(yaml_path, 'r') as f:
+            with open(yaml_path, 'r', encoding='utf-8') as f:
                 data = yaml.safe_load(f)
             
             # 現在のクラス情報を取得（ここでは更新しない）
             # クラスの追加・削除はadd_class/remove_classメソッドで行う
             
+        except yaml.YAMLError as e:
+            print(f"data.yaml YAMLエラー: {e}")
+        except IOError as e:
+            print(f"data.yaml ファイルエラー: {e}")
         except Exception as e:
-            print(f"data.yaml読み込みエラー: {e}")
+            print(f"data.yaml読み込みエラー: {type(e).__name__}: {e}")
     
     def on_polygon_completed(self, polygon):
         """ポリゴンが完成したときの処理"""
@@ -1355,24 +1366,78 @@ class AnnotationWidget(QWidget):
         class_name, ok = QInputDialog.getText(
             self, 
             "クラス追加", 
-            "新しいクラス名を入力してください:",
+            "新しいクラス名を入力してください:\n（半角英数字、アンダースコア、ハイフンのみ使用可能）",
             text=""
         )
         
         if ok and class_name:
+            # 入力値のトリミング
+            class_name = class_name.strip()
+            
+            # 空文字チェック
+            if not class_name:
+                QMessageBox.warning(self, "警告", "クラス名を入力してください")
+                return
+            
+            # 文字種チェック（半角英数字、アンダースコア、ハイフンのみ許可）
+            import re
+            if not re.match(r'^[a-zA-Z0-9_-]+$', class_name):
+                QMessageBox.warning(
+                    self, 
+                    "警告", 
+                    "クラス名には半角英数字、アンダースコア(_)、ハイフン(-)のみを使用してください。\n"
+                    "例: person, car_front, object-1"
+                )
+                return
+            
+            # 先頭が数字でないかチェック
+            if class_name[0].isdigit():
+                QMessageBox.warning(
+                    self, 
+                    "警告", 
+                    "クラス名の先頭に数字は使用できません。\n"
+                    "例: person1 (OK), 1person (NG)"
+                )
+                return
+            
+            # 予約語チェック
+            reserved_words = ['true', 'false', 'null', 'yes', 'no', 'on', 'off']
+            if class_name.lower() in reserved_words:
+                QMessageBox.warning(
+                    self, 
+                    "警告", 
+                    f"'{class_name}' はYAMLの予約語のため使用できません。\n"
+                    "別の名前を使用してください。"
+                )
+                return
+            
             # 既存のクラスを取得
             yaml_path = self.dataset_path / "data.yaml"
             if yaml_path.exists():
                 try:
-                    with open(yaml_path, 'r') as f:
+                    with open(yaml_path, 'r', encoding='utf-8') as f:
                         data = yaml.safe_load(f)
                     
                     classes = data.get('names', [])
                     
-                    # 重複チェック
+                    # 重複チェック（大文字小文字区別）
                     if class_name in classes:
                         QMessageBox.warning(self, "警告", f"クラス '{class_name}' は既に存在します")
                         return
+                    
+                    # 大文字小文字違いのチェック
+                    lower_classes = [c.lower() for c in classes]
+                    if class_name.lower() in lower_classes:
+                        existing_class = classes[lower_classes.index(class_name.lower())]
+                        reply = QMessageBox.question(
+                            self,
+                            "確認",
+                            f"類似のクラス名 '{existing_class}' が既に存在します。\n"
+                            f"'{class_name}' を追加しますか？",
+                            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                        )
+                        if reply != QMessageBox.StandardButton.Yes:
+                            return
                     
                     # クラスを追加
                     classes.append(class_name)
@@ -1380,15 +1445,39 @@ class AnnotationWidget(QWidget):
                     data['nc'] = len(classes)
                     
                     # 保存
-                    with open(yaml_path, 'w') as f:
+                    with open(yaml_path, 'w', encoding='utf-8') as f:
                         yaml.dump(data, f, default_flow_style=False, allow_unicode=True)
                     
                     # UI更新
                     self.update_dataset_info()
                     self.notify_auto_save()
                     
+                    # 追加成功メッセージ
+                    QMessageBox.information(
+                        self, 
+                        "成功", 
+                        f"クラス '{class_name}' を追加しました"
+                    )
+                    
+                except yaml.YAMLError as e:
+                    QMessageBox.critical(
+                        self, 
+                        "エラー", 
+                        f"YAMLファイルの処理中にエラーが発生しました:\n{str(e)}"
+                    )
+                except IOError as e:
+                    QMessageBox.critical(
+                        self, 
+                        "エラー", 
+                        f"ファイルの読み書き中にエラーが発生しました:\n{str(e)}"
+                    )
                 except Exception as e:
-                    QMessageBox.critical(self, "エラー", f"クラス追加エラー: {str(e)}")
+                    QMessageBox.critical(
+                        self, 
+                        "エラー", 
+                        f"クラス追加中に予期しないエラーが発生しました:\n"
+                        f"{type(e).__name__}: {str(e)}"
+                    )
     
     def remove_class(self):
         """クラスを削除"""
@@ -1402,7 +1491,7 @@ class AnnotationWidget(QWidget):
             return
         
         try:
-            with open(yaml_path, 'r') as f:
+            with open(yaml_path, 'r', encoding='utf-8') as f:
                 data = yaml.safe_load(f)
             
             classes = data.get('names', [])
@@ -1437,15 +1526,39 @@ class AnnotationWidget(QWidget):
                     data['nc'] = len(classes)
                     
                     # 保存
-                    with open(yaml_path, 'w') as f:
+                    with open(yaml_path, 'w', encoding='utf-8') as f:
                         yaml.dump(data, f, default_flow_style=False, allow_unicode=True)
                     
                     # UI更新
                     self.update_dataset_info()
                     self.notify_auto_save()
                     
+                    # 削除成功メッセージ
+                    QMessageBox.information(
+                        self, 
+                        "成功", 
+                        f"クラス '{class_name}' を削除しました"
+                    )
+                    
+        except yaml.YAMLError as e:
+            QMessageBox.critical(
+                self, 
+                "エラー", 
+                f"YAMLファイルの処理中にエラーが発生しました:\n{str(e)}"
+            )
+        except IOError as e:
+            QMessageBox.critical(
+                self, 
+                "エラー", 
+                f"ファイルの読み書き中にエラーが発生しました:\n{str(e)}"
+            )
         except Exception as e:
-            QMessageBox.critical(self, "エラー", f"クラス削除エラー: {str(e)}")
+            QMessageBox.critical(
+                self, 
+                "エラー", 
+                f"クラス削除中に予期しないエラーが発生しました:\n"
+                f"{type(e).__name__}: {str(e)}"
+            )
     
     def go_to_previous_image(self):
         """前の画像に移動"""
@@ -1519,7 +1632,7 @@ class AnnotationWidget(QWidget):
             dialog = QDialog(self)
             dialog.setWindowTitle("ラベルの追加")
             dialog.setModal(True)
-            dialog.resize(400, 200)
+            dialog.resize(400, 250)
             
             layout = QVBoxLayout(dialog)
             
@@ -1538,6 +1651,14 @@ class AnnotationWidget(QWidget):
             label_input.setPlaceholderText("例: person, car, object など")
             input_layout.addWidget(label_input)
             layout.addLayout(input_layout)
+            
+            # 入力ルール説明
+            rules_label = QLabel(
+                "※ 半角英数字、アンダースコア(_)、ハイフン(-)のみ使用可能\n"
+                "※ 先頭は英字で開始してください"
+            )
+            rules_label.setStyleSheet("QLabel { color: #666; font-size: 11px; }")
+            layout.addWidget(rules_label)
             
             # ボタン
             button_box = QDialogButtonBox(
@@ -1572,11 +1693,51 @@ class AnnotationWidget(QWidget):
         if not self.dataset_path:
             return
             
+        # 入力値のトリミング
+        class_name = class_name.strip()
+        
+        # 空文字チェック
+        if not class_name:
+            QMessageBox.warning(self, "警告", "クラス名を入力してください")
+            return
+        
+        # 文字種チェック（半角英数字、アンダースコア、ハイフンのみ許可）
+        import re
+        if not re.match(r'^[a-zA-Z0-9_-]+$', class_name):
+            QMessageBox.warning(
+                self, 
+                "警告", 
+                "クラス名には半角英数字、アンダースコア(_)、ハイフン(-)のみを使用してください。\n"
+                "例: person, car_front, object-1"
+            )
+            return
+        
+        # 先頭が数字でないかチェック
+        if class_name[0].isdigit():
+            QMessageBox.warning(
+                self, 
+                "警告", 
+                "クラス名の先頭に数字は使用できません。\n"
+                "例: person1 (OK), 1person (NG)"
+            )
+            return
+        
+        # 予約語チェック
+        reserved_words = ['true', 'false', 'null', 'yes', 'no', 'on', 'off']
+        if class_name.lower() in reserved_words:
+            QMessageBox.warning(
+                self, 
+                "警告", 
+                f"'{class_name}' はYAMLの予約語のため使用できません。\n"
+                "別の名前を使用してください。"
+            )
+            return
+            
         yaml_path = self.dataset_path / "data.yaml"
         
         try:
             # data.yamlを読み込む
-            with open(yaml_path, 'r') as f:
+            with open(yaml_path, 'r', encoding='utf-8') as f:
                 data = yaml.safe_load(f)
             
             classes = data.get('names', [])
@@ -1591,7 +1752,7 @@ class AnnotationWidget(QWidget):
             data['nc'] = len(classes)
             
             # 保存
-            with open(yaml_path, 'w') as f:
+            with open(yaml_path, 'w', encoding='utf-8') as f:
                 yaml.dump(data, f, default_flow_style=False, allow_unicode=True)
             
             # UI更新
@@ -1604,8 +1765,25 @@ class AnnotationWidget(QWidget):
                     self.label_combo.setCurrentIndex(i)
                     break
             
+        except yaml.YAMLError as e:
+            QMessageBox.critical(
+                self, 
+                "エラー", 
+                f"YAMLファイルの処理中にエラーが発生しました:\n{str(e)}"
+            )
+        except IOError as e:
+            QMessageBox.critical(
+                self, 
+                "エラー", 
+                f"ファイルの読み書き中にエラーが発生しました:\n{str(e)}"
+            )
         except Exception as e:
-            QMessageBox.critical(self, "エラー", f"クラス追加エラー: {str(e)}")
+            QMessageBox.critical(
+                self, 
+                "エラー", 
+                f"クラス追加中に予期しないエラーが発生しました:\n"
+                f"{type(e).__name__}: {str(e)}"
+            )
     
     def on_zoom_changed(self, zoom_percentage):
         """ズームレベルが変更されたときの処理"""
