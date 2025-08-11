@@ -18,14 +18,29 @@ class OutputCapture:
     """標準出力とエラー出力をキャプチャ"""
     def __init__(self, signal, is_stderr=False):
         self.signal = signal
-        self.terminal = sys.stderr if is_stderr else sys.stdout
         self.is_stderr = is_stderr
+        
+        # パッケージング環境でsys.stdout/stderrがNoneの場合に対応
+        if is_stderr:
+            self.terminal = sys.stderr if sys.stderr is not None else io.StringIO()
+        else:
+            self.terminal = sys.stdout if sys.stdout is not None else io.StringIO()
+        
+        # ダミーストリームを使用しているかのフラグ
+        self.using_dummy = isinstance(self.terminal, io.StringIO)
         
     def write(self, message):
         # Windows環境でのエンコーディング対策
         if isinstance(message, bytes):
             message = message.decode('utf-8', errors='replace')
-        self.terminal.write(message)
+        
+        # terminalがNoneでないことを確認
+        if self.terminal is not None and not self.using_dummy:
+            try:
+                self.terminal.write(message)
+            except:
+                pass  # 書き込みエラーは無視
+        
         if message.strip():
             # UTF-8エンコーディングエラーを回避
             try:
@@ -34,7 +49,12 @@ class OutputCapture:
                 self.signal.emit(message.encode('utf-8', errors='replace').decode('utf-8'))
             
     def flush(self):
-        self.terminal.flush()
+        # terminalがNoneでなく、flushメソッドを持っていることを確認
+        if self.terminal is not None and hasattr(self.terminal, 'flush'):
+            try:
+                self.terminal.flush()
+            except:
+                pass  # フラッシュエラーは無視
         
     def isatty(self):
         return False
@@ -91,6 +111,12 @@ class TrainingThread(QThread):
                     subprocess.run(['chcp', '65001'], shell=True, capture_output=True)
                 except:
                     pass
+            
+            # パッケージング環境で標準出力が存在しない場合の対策
+            if sys.stdout is None:
+                sys.stdout = io.StringIO()
+            if sys.stderr is None:
+                sys.stderr = io.StringIO()
             
             # 標準出力とエラー出力を保存
             old_stdout = sys.stdout
@@ -215,8 +241,10 @@ class TrainingThread(QThread):
                 
             finally:
                 # 標準出力とエラー出力を復元
-                sys.stdout = old_stdout
-                sys.stderr = old_stderr
+                if 'old_stdout' in locals() and old_stdout is not None:
+                    sys.stdout = old_stdout
+                if 'old_stderr' in locals() and old_stderr is not None:
+                    sys.stderr = old_stderr
                 
                 # ロガーのハンドラーをクリーンアップ
                 for logger_name in ["ultralytics", "yolo"]:
@@ -227,9 +255,9 @@ class TrainingThread(QThread):
                 
         except Exception as e:
             # エラーが発生した場合も出力を復元
-            if 'old_stdout' in locals():
+            if 'old_stdout' in locals() and old_stdout is not None:
                 sys.stdout = old_stdout
-            if 'old_stderr' in locals():
+            if 'old_stderr' in locals() and old_stderr is not None:
                 sys.stderr = old_stderr
             self.finished.emit(False, f"エラー: {str(e)}")
     
